@@ -36,6 +36,65 @@ def get_language_instruction() -> str:
     return f" Write your entire response in {lang}."
 
 
+HORIZONS = {
+    "swing": {
+        "label": "swing trade",
+        "holding_period": "2-6 weeks",
+        "lookback_days": 7,
+        "lookback_phrase": "the past week",
+    },
+    "position": {
+        "label": "position trade",
+        "holding_period": "3-6 months",
+        "lookback_days": 30,
+        "lookback_phrase": "the past 30 days",
+    },
+    "long-term": {
+        "label": "long-term investment",
+        "holding_period": "12+ months",
+        "lookback_days": 90,
+        "lookback_phrase": "the past 90 days",
+    },
+}
+
+
+def get_horizon() -> dict:
+    """Return the active horizon profile from config (default: position)."""
+    from tradingagents.dataflows.config import get_config
+    key = (get_config().get("trading_horizon") or "position").lower()
+    return HORIZONS.get(key, HORIZONS["position"])
+
+
+def get_horizon_instruction() -> str:
+    """Sentence appended to decision-agent prompts (Trader, RM, PM).
+
+    Anchors recommendations, price targets, and time_horizon fields to the
+    configured holding period so they don't drift to whatever the LLM picks.
+    """
+    h = get_horizon()
+    return (
+        f" Frame all conclusions for a {h['label']} horizon "
+        f"(typical holding period: {h['holding_period']}). "
+        f"Any price targets, stop levels, and time_horizon fields must reflect "
+        f"this holding period."
+    )
+
+
+def get_analyst_horizon_instruction() -> str:
+    """Sentence appended to analyst system messages.
+
+    Tells the analyst which lookback window to use when calling
+    look-back-aware tools (get_global_news, get_news date ranges).
+    """
+    h = get_horizon()
+    return (
+        f" When tools accept a look-back window (e.g. get_global_news, "
+        f"get_news date ranges), use {h['lookback_days']} days. "
+        f"Frame conclusions for a {h['label']} horizon "
+        f"(typical holding period: {h['holding_period']})."
+    )
+
+
 def build_instrument_context(ticker: str) -> str:
     """Describe the exact instrument so agents preserve exchange-qualified tickers."""
     return (

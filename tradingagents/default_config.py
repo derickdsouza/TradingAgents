@@ -70,6 +70,10 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # Output language for analyst reports and final decision
     # Internal agent debate stays in English for reasoning quality
     "output_language": "English",
+    # Trading horizon: shapes analyst lookback windows and the holding period
+    # the Trader / Research Manager / Portfolio Manager target.
+    # One of: "swing" (2-6 weeks), "position" (3-6 months), "long-term" (12+ months).
+    "trading_horizon": "swing",
     # Debate and discussion settings
     "max_debate_rounds": 1,
     "max_risk_discuss_rounds": 1,
