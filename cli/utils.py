@@ -232,6 +232,32 @@ def select_deep_thinking_agent(provider) -> str:
     """Select deep thinking llm engine using an interactive selection."""
     return _select_model(provider, "deep")
 
+# (display_name, provider_key, base_url) — single source of truth for the
+# Step 6 picker AND for resolving backend_url from a --provider CLI flag.
+PROVIDERS: list[tuple[str, str, str | None]] = [
+    ("OpenAI", "openai", "https://api.openai.com/v1"),
+    ("Google", "google", None),
+    ("Anthropic", "anthropic", "https://api.anthropic.com/"),
+    ("xAI", "xai", "https://api.x.ai/v1"),
+    ("DeepSeek", "deepseek", "https://api.deepseek.com"),
+    ("Qwen", "qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+    ("GLM", "glm", "https://open.bigmodel.cn/api/paas/v4/"),
+    ("GLM (z.ai Coding Plan via Anthropic API)", "glm-anthropic", "https://api.z.ai/api/anthropic"),
+    ("OpenRouter", "openrouter", "https://openrouter.ai/api/v1"),
+    ("Azure OpenAI", "azure", None),
+    ("Ollama", "ollama", "http://localhost:11434/v1"),
+]
+
+
+def get_provider_backend_url(provider_key: str) -> str | None:
+    """Look up the canonical backend URL for a provider key."""
+    key = provider_key.lower()
+    for _, k, url in PROVIDERS:
+        if k == key:
+            return url
+    return None
+
+
 def select_llm_provider() -> tuple[str, str | None]:
     """Select the LLM provider and its API endpoint."""
     # Ollama users can point at a remote ollama-serve via OLLAMA_BASE_URL

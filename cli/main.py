@@ -35,6 +35,37 @@ app = typer.Typer(
     add_completion=True,  # Enable shell completion
 )
 
+# Defaults applied when CLI flags are omitted. Bare `tradingagents` runs with
+# these silently; pass `--interactive` to opt back into the step-by-step UI.
+DEFAULTS = {
+    "ticker": "SOUTHBANK.NS",
+    "analysts": "market",
+    "depth": "deep",
+    "language": "English",
+    "provider": "glm-anthropic",
+    "quick_model": "glm-5.1",
+    "deep_model": "glm-5.1",
+    "horizon": "swing",
+}
+DEPTH_MAP = {"shallow": 1, "medium": 3, "deep": 5}
+HORIZON_CHOICES = ("swing", "position", "long-term")
+
+# Named bundles of flag values. `--profile <name>` applies these in one shot;
+# explicit flags passed alongside still win (profile fills only the slots the
+# user left at their default).
+PROFILES = {
+    "full": {
+        "analysts": "market,social,news,fundamentals",
+        "horizon": "long-term",
+        "depth": "deep",
+    },
+    "short-term": {
+        "analysts": "market",
+        "horizon": "swing",
+        "depth": "deep",
+    },
+}
+
 
 # Create a deque to store recent messages with a maximum length
 class MessageBuffer:
@@ -456,8 +487,14 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
     layout["footer"].update(Panel(stats_table, border_style="grey50"))
 
 
-def get_user_selections():
-    """Get all user selections before starting the analysis display."""
+def get_user_selections(overrides: dict | None = None, interactive: bool = True):
+    """Get all user selections before starting the analysis display.
+
+    When ``interactive`` is False, every value in ``overrides`` is used verbatim
+    (no questionary prompt). When True, overrides are ignored and the
+    step-by-step prompts run as before.
+    """
+    overrides = overrides or {}
     # Display ASCII art welcome message
     with open(Path(__file__).parent / "static" / "welcome.txt", "r", encoding="utf-8") as f:
         welcome_ascii = f.read()
@@ -470,6 +507,26 @@ def get_user_selections():
     welcome_content += (
         "[dim]Built by [Tauric Research](https://github.com/TauricResearch)[/dim]"
     )
+
+    # Run config summary (only when caller passed overrides — i.e. non-interactive)
+    if not interactive and overrides:
+        depth_label = {1: "shallow", 3: "medium", 5: "deep"}.get(
+            overrides.get("research_depth"), str(overrides.get("research_depth", "?"))
+        )
+        analysts_val = overrides.get("analysts", [])
+        analysts_label = ", ".join(
+            getattr(a, "value", str(a)) for a in analysts_val
+        ) if analysts_val else "?"
+        summary_rows = [
+            ("Ticker",   overrides.get("ticker", "?")),
+            ("Analysts", analysts_label),
+            ("Depth",    depth_label),
+            ("Horizon",  overrides.get("trading_horizon", "?")),
+        ]
+        welcome_content += "\n\n[bold]Run config:[/bold]\n"
+        welcome_content += "\n".join(
+            f"  [dim]{k}:[/dim] [bold]{v}[/bold]" for k, v in summary_rows
+        )
 
     # Create and center the welcome box
     welcome_box = Panel(
@@ -496,61 +553,97 @@ def get_user_selections():
         return Panel(box_content, border_style="blue", padding=(1, 2))
 
     # Step 1: Ticker symbol
-    console.print(
-        create_question_box(
-            "Step 1: Ticker Symbol",
-            "Enter the exact ticker symbol to analyze, including exchange suffix when needed (examples: SPY, CNC.TO, 7203.T, 0700.HK)",
-            "SPY",
+    if not interactive and "ticker" in overrides:
+        selected_ticker = overrides["ticker"]
+        console.print(f"[dim]Ticker:[/dim] [bold]{selected_ticker}[/bold]")
+    else:
+        console.print(
+            create_question_box(
+                "Step 1: Ticker Symbol",
+                "Enter the exact ticker symbol to analyze, including exchange suffix when needed (examples: SPY, CNC.TO, 7203.T, 0700.HK)",
+                "SPY",
+            )
         )
-    )
-    selected_ticker = get_ticker()
+        selected_ticker = get_ticker()
 
     # Step 2: Analysis date
     default_date = datetime.datetime.now().strftime("%Y-%m-%d")
-    console.print(
-        create_question_box(
-            "Step 2: Analysis Date",
-            "Enter the analysis date (YYYY-MM-DD)",
-            default_date,
+    if not interactive and "analysis_date" in overrides:
+        analysis_date = overrides["analysis_date"]
+        console.print(f"[dim]Analysis date:[/dim] [bold]{analysis_date}[/bold]")
+    else:
+        console.print(
+            create_question_box(
+                "Step 2: Analysis Date",
+                "Enter the analysis date (YYYY-MM-DD)",
+                default_date,
+            )
         )
-    )
-    analysis_date = get_analysis_date()
+        analysis_date = get_analysis_date()
 
     # Step 3: Output language
-    console.print(
-        create_question_box(
-            "Step 3: Output Language",
-            "Select the language for analyst reports and final decision"
+    if not interactive and "output_language" in overrides:
+        output_language = overrides["output_language"]
+        console.print(f"[dim]Output language:[/dim] [bold]{output_language}[/bold]")
+    else:
+        console.print(
+            create_question_box(
+                "Step 3: Output Language",
+                "Select the language for analyst reports and final decision"
+            )
         )
-    )
-    output_language = ask_output_language()
+        output_language = ask_output_language()
 
     # Step 4: Select analysts
-    console.print(
-        create_question_box(
-            "Step 4: Analysts Team", "Select your LLM analyst agents for the analysis"
+    if not interactive and "analysts" in overrides:
+        selected_analysts = overrides["analysts"]
+        console.print(
+            f"[dim]Analysts:[/dim] {', '.join(analyst.value for analyst in selected_analysts)}"
         )
-    )
-    selected_analysts = select_analysts()
-    console.print(
-        f"[green]Selected analysts:[/green] {', '.join(analyst.value for analyst in selected_analysts)}"
-    )
+    else:
+        console.print(
+            create_question_box(
+                "Step 4: Analysts Team", "Select your LLM analyst agents for the analysis"
+            )
+        )
+        selected_analysts = select_analysts()
+        console.print(
+            f"[green]Selected analysts:[/green] {', '.join(analyst.value for analyst in selected_analysts)}"
+        )
 
     # Step 5: Research depth
-    console.print(
-        create_question_box(
-            "Step 5: Research Depth", "Select your research depth level"
+    if not interactive and "research_depth" in overrides:
+        selected_research_depth = overrides["research_depth"]
+        console.print(f"[dim]Research depth:[/dim] [bold]{selected_research_depth}[/bold] rounds")
+    else:
+        console.print(
+            create_question_box(
+                "Step 5: Research Depth", "Select your research depth level"
+            )
         )
-    )
-    selected_research_depth = select_research_depth()
+        selected_research_depth = select_research_depth()
+
+    # Trading horizon (driven by --horizon flag; no interactive picker for now)
+    selected_trading_horizon = overrides.get("trading_horizon", DEFAULTS["horizon"])
+    console.print(f"[dim]Trading horizon:[/dim] [bold]{selected_trading_horizon}[/bold]")
 
     # Step 6: LLM Provider
-    console.print(
-        create_question_box(
-            "Step 6: LLM Provider", "Select your LLM provider"
+    if not interactive and "llm_provider" in overrides:
+        selected_llm_provider = overrides["llm_provider"]
+        backend_url = overrides.get(
+            "backend_url", get_provider_backend_url(selected_llm_provider)
         )
-    )
-    selected_llm_provider, backend_url = select_llm_provider()
+        console.print(
+            f"[dim]Provider:[/dim] [bold]{selected_llm_provider}[/bold] "
+            f"[dim]({backend_url or 'no backend_url'})[/dim]"
+        )
+    else:
+        console.print(
+            create_question_box(
+                "Step 6: LLM Provider", "Select your LLM provider"
+            )
+        )
+        selected_llm_provider, backend_url = select_llm_provider()
 
     # Providers with regional endpoints prompt for the region as a secondary
     # step so the main dropdown stays clean (mainland China and international
@@ -573,44 +666,59 @@ def get_user_selections():
     ensure_api_key(selected_llm_provider)
 
     # Step 7: Thinking agents
-    console.print(
-        create_question_box(
-            "Step 7: Thinking Agents", "Select your thinking agents for analysis"
+    if (
+        not interactive
+        and "shallow_thinker" in overrides
+        and "deep_thinker" in overrides
+    ):
+        selected_shallow_thinker = overrides["shallow_thinker"]
+        selected_deep_thinker = overrides["deep_thinker"]
+        console.print(
+            f"[dim]Quick model:[/dim] [bold]{selected_shallow_thinker}[/bold]   "
+            f"[dim]Deep model:[/dim] [bold]{selected_deep_thinker}[/bold]"
         )
-    )
-    selected_shallow_thinker = select_shallow_thinking_agent(selected_llm_provider)
-    selected_deep_thinker = select_deep_thinking_agent(selected_llm_provider)
+    else:
+        console.print(
+            create_question_box(
+                "Step 7: Thinking Agents", "Select your thinking agents for analysis"
+            )
+        )
+        selected_shallow_thinker = select_shallow_thinking_agent(selected_llm_provider)
+        selected_deep_thinker = select_deep_thinking_agent(selected_llm_provider)
 
-    # Step 8: Provider-specific thinking configuration
-    thinking_level = None
-    reasoning_effort = None
-    anthropic_effort = None
+    # Step 8: Provider-specific thinking configuration. Skipped entirely in
+    # non-interactive mode unless the corresponding override is supplied; pass
+    # --thinking-level / --reasoning-effort / --effort to set explicitly.
+    thinking_level = overrides.get("google_thinking_level")
+    reasoning_effort = overrides.get("openai_reasoning_effort")
+    anthropic_effort = overrides.get("anthropic_effort")
 
     provider_lower = selected_llm_provider.lower()
-    if provider_lower == "google":
-        console.print(
-            create_question_box(
-                "Step 8: Thinking Mode",
-                "Configure Gemini thinking mode"
+    if interactive:
+        if provider_lower == "google":
+            console.print(
+                create_question_box(
+                    "Step 8: Thinking Mode",
+                    "Configure Gemini thinking mode"
+                )
             )
-        )
-        thinking_level = ask_gemini_thinking_config()
-    elif provider_lower == "openai":
-        console.print(
-            create_question_box(
-                "Step 8: Reasoning Effort",
-                "Configure OpenAI reasoning effort level"
+            thinking_level = ask_gemini_thinking_config()
+        elif provider_lower == "openai":
+            console.print(
+                create_question_box(
+                    "Step 8: Reasoning Effort",
+                    "Configure OpenAI reasoning effort level"
+                )
             )
-        )
-        reasoning_effort = ask_openai_reasoning_effort()
-    elif provider_lower == "anthropic":
-        console.print(
-            create_question_box(
-                "Step 8: Effort Level",
-                "Configure Claude effort level"
+            reasoning_effort = ask_openai_reasoning_effort()
+        elif provider_lower == "anthropic":
+            console.print(
+                create_question_box(
+                    "Step 8: Effort Level",
+                    "Configure Claude effort level"
+                )
             )
-        )
-        anthropic_effort = ask_anthropic_effort()
+            anthropic_effort = ask_anthropic_effort()
 
     return {
         "ticker": selected_ticker,
@@ -625,6 +733,7 @@ def get_user_selections():
         "openai_reasoning_effort": reasoning_effort,
         "anthropic_effort": anthropic_effort,
         "output_language": output_language,
+        "trading_horizon": selected_trading_horizon,
     }
 
 
@@ -670,30 +779,255 @@ def get_analysis_date():
             )
 
 
+# Probe-ordered candidates: macOS SFNS (system font) and Geneva carry the
+# Indian Rupee Sign glyph; macOS Arial Unicode and core PDF Helvetica do not.
+# DejaVu Sans is the canonical Linux option.
+_UNICODE_FONT_CANDIDATES = (
+    "/System/Library/Fonts/SFNS.ttf",
+    "/System/Library/Fonts/Geneva.ttf",
+    "/System/Library/Fonts/NewYork.ttf",
+    "/System/Library/Fonts/Supplemental/Georgia.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+    "/Library/Fonts/Arial Unicode.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    "C:\\Windows\\Fonts\\arial.ttf",
+)
+
+# Codepoints we want the chosen font to actually have. INDIAN RUPEE SIGN
+# (U+20B9) is the canary — older fonts predate Unicode 6.0 and lack it.
+_REQUIRED_GLYPHS = (0x20B9,)
+
+
+def _find_unicode_font_path() -> Optional[str]:
+    """Pick the first candidate TTF whose cmap covers the required glyphs."""
+    try:
+        from reportlab.pdfbase.ttfonts import TTFont
+    except ImportError:
+        return None
+    for path in _UNICODE_FONT_CANDIDATES:
+        if not Path(path).exists():
+            continue
+        try:
+            face = TTFont("_probe", path).face
+        except Exception:
+            continue
+        if all(face.charToGlyph.get(cp) for cp in _REQUIRED_GLYPHS):
+            return path
+    return None
+
+
+# Color emoji can't be rendered by reportlab/xhtml2pdf from a regular TTF (PDF
+# has no native color-emoji story for embedded fonts that ship the COLR/sbix
+# tables). The pragmatic workaround is to swap each emoji codepoint for an
+# inline ``<img>`` tag pointing at a small Twemoji PNG, cached on first use.
+_EMOJI_RE = __import__("re").compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U00002600-\U000027BF"
+    "\U0001F600-\U0001F64F"
+    "]"
+)
+_TWEMOJI_URL = "https://cdn.jsdelivr.net/gh/jdecked/twemoji@latest/assets/72x72/{cp}.png"
+
+
+def _fetch_emoji_png(cp: str, cache_dir: Path) -> Optional[Path]:
+    """Download a Twemoji PNG and normalize it to RGBA so reportlab renders the
+    transparent background as transparent rather than opaque black.
+    """
+    target = cache_dir / f"{cp}.png"
+    if target.exists() and target.stat().st_size > 0:
+        return target
+    import urllib.request, io
+    try:
+        with urllib.request.urlopen(_TWEMOJI_URL.format(cp=cp), timeout=5) as r:
+            raw = r.read()
+        from PIL import Image
+        with Image.open(io.BytesIO(raw)) as im:
+            im = im.convert("RGBA")
+            im.save(target, "PNG")
+        return target
+    except Exception:
+        if target.exists():
+            target.unlink()
+        return None
+
+
+# Variation selectors (U+FE00-U+FE0F) are non-printing, but some fonts render
+# them as visible glyphs once the preceding emoji is replaced by an <img>.
+# Strip them after substitution so they don't leave artefacts.
+_VARIATION_SELECTOR_RE = __import__("re").compile("[\U0000FE00-\U0000FE0F]")
+
+
+def _replace_emoji_with_img(html: str) -> str:
+    """Replace emoji characters with inline <img> tags backed by Twemoji PNGs."""
+    import tempfile
+    cache_dir = Path(tempfile.gettempdir()) / "tradingagents_emoji"
+    cache_dir.mkdir(exist_ok=True)
+
+    def sub(m):
+        ch = m.group(0)
+        cp = f"{ord(ch):x}"
+        png = _fetch_emoji_png(cp, cache_dir)
+        if not png:
+            return ch
+        # xhtml2pdf doesn't honour inline margin on <img>, so we append a
+        # non-breaking space to create visible separation between glyph and text.
+        return (
+            f'<img src="{png.resolve()}" '
+            'style="height: 11pt; width: 11pt; vertical-align: middle;"/>&nbsp;'
+        )
+
+    return _VARIATION_SELECTOR_RE.sub("", _EMOJI_RE.sub(sub, html))
+
+
+def _markdown_to_pdf(md_path: Path) -> Optional[Path]:
+    """Render a markdown report to a sibling PDF. Returns the PDF path or None on failure.
+
+    Optional dependency: ``pip install markdown xhtml2pdf``. Missing/broken deps
+    are reported once and the caller falls back to opening the markdown.
+    """
+    try:
+        import markdown as md_lib
+        from xhtml2pdf import pisa
+    except ImportError:
+        console.print(
+            "[yellow]PDF generation skipped — install with: "
+            "pip install markdown xhtml2pdf[/yellow]"
+        )
+        return None
+
+    pdf_path = md_path.with_suffix(".pdf")
+    try:
+        body_html = md_lib.markdown(
+            md_path.read_text(encoding="utf-8"),
+            extensions=["tables", "fenced_code", "sane_lists"],
+        )
+        body_html = _replace_emoji_with_img(body_html)
+        # xhtml2pdf only embeds fonts declared via @font-face in CSS — registering
+        # them with reportlab alone is not enough. We declare all four weight/style
+        # variants so bold/italic cells (e.g. table headers) don't fall back to
+        # Helvetica and lose glyphs like ₹.
+        font_path = _find_unicode_font_path()
+        if font_path:
+            # xhtml2pdf reads @font-face url() as a filesystem path. It chokes on
+            # spaces and on file:// URIs, so we copy the TTF to a temp file with
+            # a safe name and reference it as an absolute path.
+            import shutil, tempfile
+            safe_dir = Path(tempfile.gettempdir()) / "tradingagents_fonts"
+            safe_dir.mkdir(exist_ok=True)
+            safe_font = safe_dir / "ReportUnicode.ttf"
+            if not safe_font.exists():
+                shutil.copy(font_path, safe_font)
+            ref = str(safe_font.resolve())
+            font_face_css = (
+                f"@font-face {{ font-family: ReportUnicode; src: url({ref}); }}"
+                f"@font-face {{ font-family: ReportUnicode; font-weight: bold; src: url({ref}); }}"
+                f"@font-face {{ font-family: ReportUnicode; font-style: italic; src: url({ref}); }}"
+                f"@font-face {{ font-family: ReportUnicode; font-weight: bold; font-style: italic; src: url({ref}); }}"
+            )
+            body_font = "ReportUnicode, Helvetica, Arial, sans-serif"
+            mono_font = "ReportUnicode, 'Menlo', 'Courier New', monospace"
+        else:
+            font_face_css = ""
+            body_font = "Helvetica, Arial, sans-serif"
+            mono_font = "'Menlo', 'Courier New', monospace"
+        html_doc = (
+            "<html><head><meta charset='utf-8'><style>"
+            + font_face_css +
+            f"body {{ font-family: {body_font}; font-size: 10pt; line-height: 1.4; }}"
+            "h1 { font-size: 18pt; } h2 { font-size: 14pt; margin-top: 18pt; }"
+            "h3 { font-size: 12pt; } h4 { font-size: 11pt; }"
+            "table { border-collapse: collapse; margin: 6pt 0; }"
+            "th, td { border: 1px solid #999; padding: 4pt 6pt; }"
+            f"code, pre {{ font-family: {mono_font}; font-size: 9pt; }}"
+            "pre { background: #f4f4f4; padding: 6pt; }"
+            "</style></head><body>" + body_html + "</body></html>"
+        )
+        with open(pdf_path, "wb") as f:
+            result = pisa.CreatePDF(html_doc, dest=f)
+        if result.err:
+            console.print("[yellow]PDF generation reported errors; using MD instead.[/yellow]")
+            return None
+        return pdf_path
+    except Exception as e:
+        console.print(f"[yellow]PDF generation failed: {e}[/yellow]")
+        return None
+
+
+def _open_in_default_viewer(path: Path) -> None:
+    """Open a file with the OS default application. No-op on failure."""
+    import platform
+    import subprocess
+    import os
+
+    system = platform.system()
+    try:
+        if system == "Darwin":
+            subprocess.run(["open", str(path)], check=False)
+        elif system == "Windows":
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        else:
+            subprocess.run(["xdg-open", str(path)], check=False)
+    except Exception as e:
+        console.print(f"[yellow]Could not open report in default viewer: {e}[/yellow]")
+
+
+_PREAMBLE_OPENERS = (
+    "excellent", "great", "perfect", "sure", "of course", "got it",
+    "here is", "here's", "here is the", "all data",
+    "i'll", "i will", "let me", "alright", "okay",
+)
+
+
+def _strip_preamble(text: str) -> str:
+    """Drop a conversational opening paragraph if present.
+
+    The model occasionally prefaces analyst reports with chatty lines like
+    'Excellent. All data is now in hand. Here is the analysis...'. Detect such
+    a paragraph (before the first markdown heading) and remove it.
+    """
+    if not text:
+        return text
+    parts = text.split("\n\n", 1)
+    if len(parts) < 2:
+        return text
+    head, rest = parts[0].strip(), parts[1]
+    if not head or head.startswith("#") or head.startswith("|"):
+        return text
+    if any(head.lower().startswith(opener) for opener in _PREAMBLE_OPENERS):
+        return rest.lstrip()
+    return text
+
+
 def save_report_to_disk(final_state, ticker: str, save_path: Path):
     """Save complete analysis report to disk with organized subfolders."""
     save_path.mkdir(parents=True, exist_ok=True)
     sections = []
 
-    # 1. Analysts
+    # 1. Analysts (preamble stripped to drop any chatty model preamble)
     analysts_dir = save_path / "1_analysts"
     analyst_parts = []
     if final_state.get("market_report"):
         analysts_dir.mkdir(exist_ok=True)
-        (analysts_dir / "market.md").write_text(final_state["market_report"], encoding="utf-8")
-        analyst_parts.append(("Market Analyst", final_state["market_report"]))
+        market_text = _strip_preamble(final_state["market_report"])
+        (analysts_dir / "market.md").write_text(market_text, encoding="utf-8")
+        analyst_parts.append(("Market Analyst", market_text))
     if final_state.get("sentiment_report"):
         analysts_dir.mkdir(exist_ok=True)
-        (analysts_dir / "sentiment.md").write_text(final_state["sentiment_report"], encoding="utf-8")
-        analyst_parts.append(("Sentiment Analyst", final_state["sentiment_report"]))
+        sentiment_text = _strip_preamble(final_state["sentiment_report"])
+        (analysts_dir / "sentiment.md").write_text(sentiment_text, encoding="utf-8")
+        analyst_parts.append(("Sentiment Analyst", sentiment_text))
     if final_state.get("news_report"):
         analysts_dir.mkdir(exist_ok=True)
-        (analysts_dir / "news.md").write_text(final_state["news_report"], encoding="utf-8")
-        analyst_parts.append(("News Analyst", final_state["news_report"]))
+        news_text = _strip_preamble(final_state["news_report"])
+        (analysts_dir / "news.md").write_text(news_text, encoding="utf-8")
+        analyst_parts.append(("News Analyst", news_text))
     if final_state.get("fundamentals_report"):
         analysts_dir.mkdir(exist_ok=True)
-        (analysts_dir / "fundamentals.md").write_text(final_state["fundamentals_report"], encoding="utf-8")
-        analyst_parts.append(("Fundamentals Analyst", final_state["fundamentals_report"]))
+        fundamentals_text = _strip_preamble(final_state["fundamentals_report"])
+        (analysts_dir / "fundamentals.md").write_text(fundamentals_text, encoding="utf-8")
+        analyst_parts.append(("Fundamentals Analyst", fundamentals_text))
     if analyst_parts:
         content = "\n\n".join(f"### {name}\n{text}" for name, text in analyst_parts)
         sections.append(f"## I. Analyst Team Reports\n\n{content}")
@@ -754,10 +1088,14 @@ def save_report_to_disk(final_state, ticker: str, save_path: Path):
             (portfolio_dir / "decision.md").write_text(risk["judge_decision"], encoding="utf-8")
             sections.append(f"## V. Portfolio Manager Decision\n\n### Portfolio Manager\n{risk['judge_decision']}")
 
-    # Write consolidated report
+    # Write consolidated report. The file is prefixed with the ticker base
+    # (e.g. NDRAUTO.NS -> ndrauto_complete_report.md) so a folder containing
+    # multiple runs is easy to scan.
+    prefix = ticker.split(".")[0].lower() if ticker else "report"
     header = f"# Trading Analysis Report: {ticker}\n\nGenerated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-    (save_path / "complete_report.md").write_text(header + "\n\n".join(sections), encoding="utf-8")
-    return save_path / "complete_report.md"
+    md_path = save_path / f"{prefix}_complete_report.md"
+    md_path.write_text(header + "\n\n".join(sections), encoding="utf-8")
+    return md_path
 
 
 def display_complete_report(final_state):
@@ -960,9 +1298,17 @@ def format_tool_args(args, max_length=80) -> str:
         return result[:max_length - 3] + "..."
     return result
 
-def run_analysis(checkpoint: bool = False):
+def run_analysis(
+    checkpoint: bool = False,
+    overrides: dict | None = None,
+    interactive: bool = True,
+    save_report: bool = True,
+    report_name: Optional[str] = None,
+    display_report: bool = False,
+    open_report: bool = True,
+):
     # First get all user selections
-    selections = get_user_selections()
+    selections = get_user_selections(overrides=overrides, interactive=interactive)
 
     # Create config with selected research depth
     config = DEFAULT_CONFIG.copy()
@@ -977,6 +1323,7 @@ def run_analysis(checkpoint: bool = False):
     config["openai_reasoning_effort"] = selections.get("openai_reasoning_effort")
     config["anthropic_effort"] = selections.get("anthropic_effort")
     config["output_language"] = selections.get("output_language", "English")
+    config["trading_horizon"] = selections.get("trading_horizon", "position")
     config["checkpoint_enabled"] = checkpoint
 
     # Create stats callback handler for tracking LLM/tool calls
@@ -1208,34 +1555,90 @@ def run_analysis(checkpoint: bool = False):
 
         update_display(layout, stats_handler=stats_handler, start_time=start_time)
 
-    # Post-analysis prompts (outside Live context for clean interaction)
+    # Post-analysis actions (outside Live context for clean output)
     console.print("\n[bold cyan]Analysis Complete![/bold cyan]\n")
 
-    # Prompt to save report
-    save_choice = typer.prompt("Save report?", default="Y").strip().upper()
-    if save_choice in ("Y", "YES", ""):
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_path = Path.cwd() / "reports" / f"{selections['ticker']}_{timestamp}"
-        save_path_str = typer.prompt(
-            "Save path (press Enter for default)",
-            default=str(default_path)
-        ).strip()
-        save_path = Path(save_path_str)
+    if save_report:
+        if report_name:
+            save_path = Path(report_name)
+            if not save_path.is_absolute():
+                save_path = Path.cwd() / "reports" / save_path
+        else:
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_path = Path.cwd() / "reports" / f"{selections['ticker']}_{timestamp}"
         try:
             report_file = save_report_to_disk(final_state, selections["ticker"], save_path)
-            console.print(f"\n[green]✓ Report saved to:[/green] {save_path.resolve()}")
-            console.print(f"  [dim]Complete report:[/dim] {report_file.name}")
+            console.print(f"[green]✓ Report saved to:[/green] {report_file.resolve()}")
+            pdf_file = _markdown_to_pdf(report_file)
+            if pdf_file:
+                console.print(f"[green]✓ PDF saved to:[/green]    {pdf_file.resolve()}")
+            if open_report:
+                target = pdf_file if pdf_file else report_file
+                _open_in_default_viewer(target.resolve())
         except Exception as e:
             console.print(f"[red]Error saving report: {e}[/red]")
+    else:
+        console.print("[dim]Skipped report save (--skip-save-report).[/dim]")
 
-    # Prompt to display full report
-    display_choice = typer.prompt("\nDisplay full report on screen?", default="Y").strip().upper()
-    if display_choice in ("Y", "YES", ""):
+    if display_report:
         display_complete_report(final_state)
 
 
 @app.command()
 def analyze(
+    ticker: str = typer.Option(
+        DEFAULTS["ticker"], "--ticker", "-t",
+        help="Ticker symbol with exchange suffix when needed (e.g. SPY, CNC.TO, 7203.T).",
+    ),
+    date: Optional[str] = typer.Option(
+        None, "--date", "-d",
+        help="Analysis date (YYYY-MM-DD). Defaults to today.",
+    ),
+    language: str = typer.Option(
+        DEFAULTS["language"], "--language", "-l",
+        help="Output language for analyst reports and final decision.",
+    ),
+    analysts: str = typer.Option(
+        DEFAULTS["analysts"], "--analysts",
+        help="Comma-separated analysts: market,social,news,fundamentals.",
+    ),
+    depth: str = typer.Option(
+        DEFAULTS["depth"], "--depth",
+        help="Research depth: shallow | medium | deep.",
+    ),
+    horizon: str = typer.Option(
+        DEFAULTS["horizon"], "--horizon",
+        help="Trading horizon: swing (2-6 weeks) | position (3-6 months) | long-term (12+ months). "
+             "Drives analyst lookback windows and the holding period the trader / PM target.",
+    ),
+    provider: str = typer.Option(
+        DEFAULTS["provider"], "--provider", "-p",
+        help="LLM provider key (e.g. glm-anthropic, openai, anthropic, xai).",
+    ),
+    quick_model: str = typer.Option(
+        DEFAULTS["quick_model"], "--quick-model",
+        help="Model id for quick-thinking agents.",
+    ),
+    deep_model: str = typer.Option(
+        DEFAULTS["deep_model"], "--deep-model",
+        help="Model id for deep-thinking agents.",
+    ),
+    effort: Optional[str] = typer.Option(
+        None, "--effort",
+        help="Anthropic effort level (low|medium|high). Only applies to anthropic provider.",
+    ),
+    reasoning_effort: Optional[str] = typer.Option(
+        None, "--reasoning-effort",
+        help="OpenAI reasoning effort (low|medium|high). Only applies to openai provider.",
+    ),
+    thinking_level: Optional[str] = typer.Option(
+        None, "--thinking-level",
+        help="Gemini thinking level. Only applies to google provider.",
+    ),
+    interactive: bool = typer.Option(
+        False, "--interactive", "-i",
+        help="Show step-by-step prompts instead of using flag defaults.",
+    ),
     checkpoint: bool = typer.Option(
         False,
         "--checkpoint",
@@ -1246,12 +1649,98 @@ def analyze(
         "--clear-checkpoints",
         help="Delete all saved checkpoints before running (force fresh start).",
     ),
+    report_name: Optional[str] = typer.Option(
+        None, "--report-name",
+        help="Override generated report folder name. Relative paths land under ./reports/.",
+    ),
+    skip_save_report: bool = typer.Option(
+        False, "--skip-save-report",
+        help="Do not save the consolidated report to ./reports/ at the end of the run.",
+    ),
+    display_report: bool = typer.Option(
+        False, "--display-report",
+        help="Print the full consolidated report to the terminal after the run.",
+    ),
+    skip_open_report: bool = typer.Option(
+        False, "--skip-open-report",
+        help="Do not auto-launch the saved report in the default OS viewer.",
+    ),
+    profile: Optional[str] = typer.Option(
+        None, "--profile",
+        help=f"Named bundle of flag values: {', '.join(PROFILES)}. "
+             "Explicit flags override profile values.",
+    ),
 ):
     if clear_checkpoints:
         from tradingagents.graph.checkpointer import clear_all_checkpoints
         n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])
         console.print(f"[yellow]Cleared {n} checkpoint(s).[/yellow]")
-    run_analysis(checkpoint=checkpoint)
+
+    if profile is not None:
+        profile_key = profile.lower()
+        if profile_key not in PROFILES:
+            raise typer.BadParameter(
+                f"--profile must be one of {list(PROFILES)}, got {profile!r}"
+            )
+        bundle = PROFILES[profile_key]
+        if analysts == DEFAULTS["analysts"] and "analysts" in bundle:
+            analysts = bundle["analysts"]
+        if horizon == DEFAULTS["horizon"] and "horizon" in bundle:
+            horizon = bundle["horizon"]
+        if depth == DEFAULTS["depth"] and "depth" in bundle:
+            depth = bundle["depth"]
+        console.print(f"[dim]Profile:[/dim] [bold]{profile_key}[/bold]")
+
+    depth_key = depth.lower()
+    if depth_key not in DEPTH_MAP:
+        raise typer.BadParameter(
+            f"--depth must be one of {list(DEPTH_MAP)}, got {depth!r}"
+        )
+
+    horizon_key = horizon.lower()
+    if horizon_key not in HORIZON_CHOICES:
+        raise typer.BadParameter(
+            f"--horizon must be one of {list(HORIZON_CHOICES)}, got {horizon!r}"
+        )
+
+    try:
+        analyst_enums = [
+            AnalystType(a.strip().lower())
+            for a in analysts.split(",") if a.strip()
+        ]
+    except ValueError as e:
+        raise typer.BadParameter(
+            f"--analysts contains an unknown analyst: {e}. "
+            f"Valid: {[a.value for a in AnalystType]}"
+        )
+    if not analyst_enums:
+        raise typer.BadParameter("--analysts must list at least one analyst.")
+
+    overrides = {
+        "ticker": ticker,
+        "analysis_date": date or datetime.datetime.now().strftime("%Y-%m-%d"),
+        "output_language": language,
+        "analysts": analyst_enums,
+        "research_depth": DEPTH_MAP[depth_key],
+        "llm_provider": provider.lower(),
+        "backend_url": get_provider_backend_url(provider),
+        "shallow_thinker": quick_model,
+        "deep_thinker": deep_model,
+        "anthropic_effort": effort,
+        "openai_reasoning_effort": reasoning_effort,
+        "google_thinking_level": thinking_level,
+        "trading_horizon": horizon_key,
+    }
+
+    run_analysis(
+        checkpoint=checkpoint,
+        overrides=overrides,
+        interactive=interactive,
+        save_report=not skip_save_report,
+        report_name=report_name,
+        display_report=display_report,
+        open_report=not skip_open_report,
+    )
 
 
 if __name__ == "__main__":
