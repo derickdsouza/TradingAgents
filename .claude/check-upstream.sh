@@ -18,7 +18,7 @@ cd "$REPO_ROOT"
 
 QUIET=0
 [[ "${1-}" == "--quiet" ]] && QUIET=1
-say() { [[ $QUIET -eq 0 ]] && echo "$@"; }
+say() { [[ $QUIET -eq 0 ]] && echo "$@"; return 0; }
 
 # Sanity checks
 git remote get-url upstream >/dev/null 2>&1 || {
