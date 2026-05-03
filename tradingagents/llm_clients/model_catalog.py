@@ -146,9 +146,12 @@ MODEL_OPTIONS: ProviderModeOptions = {
     "qwen": _QWEN_MODELS,
     "qwen-cn": _QWEN_MODELS,
     # GLM: Z.AI (international) and BigModel (China) host the same model
-    # IDs; the two provider keys share one model list.
+    # IDs; the two provider keys share one model list. The Anthropic-
+    # compatible endpoint (z.ai Coding Plan) hosts the same model IDs too,
+    # so it shares the same catalog.
     "glm": _GLM_MODELS,
     "glm-cn": _GLM_MODELS,
+    "glm-anthropic": _GLM_MODELS,
     # MiniMax: same model IDs across global (.io) and China (.com) regions,
     # so the two provider keys share one model list.
     "minimax": _MINIMAX_MODELS,

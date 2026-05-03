@@ -24,10 +24,17 @@ class NormalizedChatAnthropic(ChatAnthropic):
 
 
 class AnthropicClient(BaseLLMClient):
-    """Client for Anthropic Claude models."""
+    """Client for Anthropic Claude models and Anthropic-compatible endpoints."""
 
-    def __init__(self, model: str, base_url: Optional[str] = None, **kwargs):
+    def __init__(
+        self,
+        model: str,
+        base_url: Optional[str] = None,
+        provider: str = "anthropic",
+        **kwargs,
+    ):
         super().__init__(model, base_url, **kwargs)
+        self.provider = provider.lower()
 
     def get_llm(self) -> Any:
         """Return configured ChatAnthropic instance."""
@@ -44,5 +51,5 @@ class AnthropicClient(BaseLLMClient):
         return NormalizedChatAnthropic(**llm_kwargs)
 
     def validate_model(self) -> bool:
-        """Validate model for Anthropic."""
-        return validate_model("anthropic", self.model)
+        """Validate model for the configured provider."""
+        return validate_model(self.provider, self.model)
