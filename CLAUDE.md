@@ -5,8 +5,9 @@ The goal is to keep a stack of focused local patches on top of upstream `main`,
 rebasing periodically and dropping any patch that upstream eventually adopts.
 
 This file documents the workflow so it survives between Claude sessions, and
-also serves as the assistant briefing for further changes. It is local-only —
-listed in `.git/info/exclude` so it never gets pushed to either remote.
+also serves as the assistant briefing for further changes. It is **tracked on
+the `meta` branch of the fork** (separate from `local-patches`), and listed in
+`.git/info/exclude` so it stays invisible on every other branch.
 
 ---
 
@@ -19,8 +20,18 @@ origin    https://github.com/derickdsouza/TradingAgents.git      # personal fork
 
 Branches:
 
-- `main` — tracks `upstream/main`. Never commit here directly.
-- `local-patches` — tracks `origin/local-patches`. All personal changes live as a stack of focused commits on top of `upstream/main`.
+- `main` — tracks `upstream/main`. Never commit here directly. Used as the rebase base for `local-patches`.
+- `local-patches` — tracks `origin/local-patches`. All personal **code** changes live as a stack of focused commits on top of `upstream/main`. Rebased onto upstream periodically.
+- `meta` — tracks `origin/meta`. Carries durable **non-code** files (this `CLAUDE.md`, `.claude/check-upstream.sh`). Sits on top of `upstream/main` as a tiny one-commit branch. **Never rebased** — it's reference material, not a patch stack.
+
+The split exists because `CLAUDE.md` and the upstream-check script need to sync across machines (so they go on `meta`, on the fork) but shouldn't tangle with the patch stack rebase loop (so they're not on `local-patches`). Per-machine state files (`.claude/upstream-status.json`, `.claude/settings.local.json`) stay strictly local via `.git/info/exclude`.
+
+**Restore on a new machine after cloning the fork:**
+```bash
+git checkout meta -- CLAUDE.md .claude/check-upstream.sh
+chmod +x .claude/check-upstream.sh
+```
+Then continue work on `local-patches` as normal — the meta files will be present in the working tree but excluded from the index of every other branch.
 
 ---
 
