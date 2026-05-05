@@ -155,6 +155,19 @@ def get_stock_stats_indicators_window(
             "Usage: Read alongside ADX and +DI. -DI > +DI = bearish bias; a -DI cross above +DI with rising ADX is the canonical Wilder short-entry / exit-long signal. "
             "Tips: When -DI is rising while price is still grinding higher, treat it as a divergence warning that the up-leg is losing breadth. Only act on -DI > +DI when ADX confirms (>20-25) — otherwise it's just chop."
         ),
+        "pivots_daily": (
+            "Daily Floor Pivots (P, S1-S3, R1-R3): Classical floor-trader pivots derived from the PRIOR session's H/L/C. "
+            "P = (H+L+C)/3; R1 = 2P-L; S1 = 2P-H; R2 = P+(H-L); S2 = P-(H-L); R3 = H+2(P-L); S3 = L-2(H-P). "
+            "Returns each level with the offset from current close, e.g. `R3: 451.30 (+1.6%) | R2: ... | P: 442.10 (-0.5%) | ...`. "
+            "Usage: Hard horizontal support/resistance reference (independent of trend) — used by every futures and equity day desk for intraday and short-swing reaction levels. "
+            "Tips: Pair with `breakout_20` to disambiguate a true range expansion (close cleanly outside R1/S1 on volume) from noise (rejection at R1 = the textbook fade). Daily pivots refresh every session, so re-read them on a fresh bar."
+        ),
+        "pivots_weekly": (
+            "Weekly Floor Pivots (P, S1-S3, R1-R3): Same formula as `pivots_daily`, but anchored to the PRIOR CALENDAR WEEK's H/L/C. "
+            "Persist across all five sessions of the current week — they're the dominant levels on which institutional swing positions get sized and hedged. "
+            "Usage: Higher-timeframe reaction levels for swing trades. A test of weekly P or R1/S1 from below/above is a textbook entry zone; failure to hold weekly S1 is a serious technical break. "
+            "Tips: Always read alongside `pivots_daily` — when a daily and weekly level coincide within 0.5%, treat that confluence as a high-conviction reaction zone."
+        ),
         "aroon_25": (
             "Aroon Up / Down (25): Tushar Chande's trend-FRESHNESS indicator (distinct from ADX, which measures strength). "
             "Aroon-Up = 100 means today printed the highest high of the last 26 bars (fresh new high); 0 means the high is stale. Aroon-Down is the mirror for lows. "
@@ -273,6 +286,7 @@ def get_stock_stats_indicators_window(
 
 _CUSTOM_INDICATORS = {
     "obv", "rvol_20", "breakout_20", "guppy", "vsa", "chandelier", "aroon_25",
+    "pivots_daily", "pivots_weekly",
     "minervini_trend", "pocket_pivot", "vcp", "tight_3w",
 }
 
@@ -403,6 +417,63 @@ def _compute_custom_indicator(
                 f"CE long {ce_l:.2f} ({-long_dist:+.1f}%) | "
                 f"CE short {ce_s:.2f} ({short_dist:+.1f}%)"
             )
+        return pd.Series(out, index=df.index)
+
+    if indicator in ("pivots_daily", "pivots_weekly"):
+        # Floor-trader pivots from prior period's OHLC.
+        # Daily uses prior session; weekly uses prior calendar week (Mon-Fri close).
+        if indicator == "pivots_daily":
+            prior_h = df["high"].shift(1)
+            prior_l = df["low"].shift(1)
+            prior_c = df["close"].shift(1)
+        else:
+            # Resample to weekly bars using a DatetimeIndex, compute prior-week
+            # OHLC, then broadcast back to the daily index. The pivot for any
+            # day in calendar week W comes from week W-1's H/L/C.
+            if "Date" in df.columns:
+                date_idx = pd.to_datetime(df["Date"])
+            else:
+                date_idx = pd.to_datetime(df.index)
+            tmp = pd.DataFrame(
+                {"high": df["high"].values, "low": df["low"].values, "close": df["close"].values},
+                index=pd.DatetimeIndex(date_idx.values),
+            )
+            weekly = tmp.resample("W-FRI").agg({"high": "max", "low": "min", "close": "last"})
+            weekly_prev = weekly.shift(1)
+            # Map each daily bar to its week's prior-week values via merge_asof
+            week_end = pd.to_datetime(date_idx.values).to_series().reset_index(drop=True)
+            week_end_floored = week_end.dt.to_period("W-FRI").apply(lambda p: p.end_time.normalize())
+            weekly_prev_reset = weekly_prev.reset_index().rename(columns={"index": "week_end"})
+            weekly_prev_reset["week_end"] = pd.to_datetime(weekly_prev_reset["week_end"]).dt.normalize()
+            mapped = pd.merge_asof(
+                pd.DataFrame({"week_end": week_end_floored.values}),
+                weekly_prev_reset.sort_values("week_end"),
+                on="week_end",
+                direction="backward",
+            )
+            prior_h = pd.Series(mapped["high"].values, index=df.index)
+            prior_l = pd.Series(mapped["low"].values, index=df.index)
+            prior_c = pd.Series(mapped["close"].values, index=df.index)
+
+        out = []
+        for close, h, l, c in zip(df["close"], prior_h, prior_l, prior_c):
+            if pd.isna(h) or pd.isna(l) or pd.isna(c) or close <= 0:
+                out.append("N/A")
+                continue
+            p = (h + l + c) / 3
+            r1 = 2 * p - l
+            s1 = 2 * p - h
+            r2 = p + (h - l)
+            s2 = p - (h - l)
+            r3 = h + 2 * (p - l)
+            s3 = l - 2 * (h - p)
+            levels = [
+                ("R3", r3), ("R2", r2), ("R1", r1),
+                ("P", p),
+                ("S1", s1), ("S2", s2), ("S3", s3),
+            ]
+            parts = [f"{name}: {lvl:.2f} ({(lvl - close) / close * 100:+.1f}%)" for name, lvl in levels]
+            out.append(" | ".join(parts))
         return pd.Series(out, index=df.index)
 
     if indicator == "aroon_25":
