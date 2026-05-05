@@ -1143,7 +1143,7 @@ h3.ta-analyst {
   border-left: 4pt solid #f59e0b;
   border-bottom: 0;
   padding: 5pt 14pt 5pt 12pt;
-  margin: 16pt 0 8pt 0;
+  margin: 16pt 0 8pt 24pt;
   letter-spacing: 0;
   page-break-after: avoid;
   break-after: avoid;
