@@ -155,6 +155,24 @@ def get_stock_stats_indicators_window(
             "Usage: Read alongside ADX and +DI. -DI > +DI = bearish bias; a -DI cross above +DI with rising ADX is the canonical Wilder short-entry / exit-long signal. "
             "Tips: When -DI is rising while price is still grinding higher, treat it as a divergence warning that the up-leg is losing breadth. Only act on -DI > +DI when ADX confirms (>20-25) — otherwise it's just chop."
         ),
+        "avwap_52wh": (
+            "Anchored VWAP from the 52-week high date: cumulative VWAP starting the day the trailing-252 high printed. "
+            "Returns `AVWAP-52wH: X.XX (close ±Y.Y%)`. The level is the average price paid by everyone who bought at/since the cycle peak — i.e. the cohort that's currently underwater on average. "
+            "Usage: A close trading BELOW AVWAP-52wH means most post-peak buyers are losing money — overhead supply forms here on rallies. A close that reclaims AVWAP-52wH from below is a regime-change signal (peak buyers are back in profit, overhead supply has cleared). "
+            "Tips: Confluence with horizontal pivot R-levels makes for very reliable resistance. The bigger the offset (close X% below), the more selling pressure on rallies."
+        ),
+        "avwap_52wl": (
+            "Anchored VWAP from the 52-week low date: cumulative VWAP starting the day the trailing-252 low printed. "
+            "Returns `AVWAP-52wL: X.XX (close ±Y.Y%)`. The level is the average price paid by everyone who bought the bottom — i.e. the cohort sitting in deep profit. "
+            "Usage: A close trading ABOVE AVWAP-52wL means the bottom-buyers are still in profit and unlikely to be sellers — strong demand floor. A break BELOW AVWAP-52wL is the textbook 'bottom-buyers capitulate' signal and often precedes a flush. "
+            "Tips: Pair with `pivots_weekly S1/S2` — confluence within 0.5% is a high-conviction support zone. AVWAP-52wL slope flattening or rolling over is an early warning that demand is fading."
+        ),
+        "avwap_earnings": (
+            "Anchored VWAP from the most recent reported earnings date: cumulative VWAP since the last earnings print. "
+            "Returns `AVWAP-Earnings: X.XX (close ±Y.Y%)`, or N/A if yfinance has no earnings data (common for ETFs, indices, some non-US tickers). "
+            "Usage: The level is what every post-earnings buyer paid on average — a clean read of post-earnings positioning. Above = post-earnings cohort is in profit, trend is being defended; below = post-earnings cohort underwater, pressure to sell into rallies. "
+            "Tips: An earnings AVWAP that holds repeatedly on pullbacks is a textbook institutional accumulation signal. A clean break below post-earnings AVWAP is a high-quality earnings-thesis-broken signal worth treating as a hard exit."
+        ),
         "pivots_daily": (
             "Daily Floor Pivots (P, S1-S3, R1-R3): Classical floor-trader pivots derived from the PRIOR session's H/L/C. "
             "P = (H+L+C)/3; R1 = 2P-L; S1 = 2P-H; R2 = P+(H-L); S2 = P-(H-L); R3 = H+2(P-L); S3 = L-2(H-P). "
@@ -287,6 +305,7 @@ def get_stock_stats_indicators_window(
 _CUSTOM_INDICATORS = {
     "obv", "rvol_20", "breakout_20", "guppy", "vsa", "chandelier", "aroon_25",
     "pivots_daily", "pivots_weekly",
+    "avwap_52wh", "avwap_52wl", "avwap_earnings",
     "minervini_trend", "pocket_pivot", "vcp", "tight_3w",
 }
 
@@ -333,6 +352,49 @@ def _load_benchmark_close(symbol: str, curr_date: str) -> "pd.Series | None":
     bench_df = wrap(bench_data)
     bench_df["Date"] = bench_df["Date"].dt.strftime("%Y-%m-%d")
     return bench_df.set_index("Date")["close"]
+
+
+def _earnings_anchor_positions(df: "pd.DataFrame", symbol: str | None, n: int) -> list:
+    """For each row in df, return the row position of the most recent earnings
+    date on/before that row's date, or None if no earnings data is available
+    (yfinance returns nothing for ETFs/indices/some non-US tickers).
+    """
+    if not symbol:
+        return [None] * n
+    try:
+        import yfinance as yf
+        tk = yf.Ticker(symbol)
+        ed = tk.earnings_dates
+    except Exception:
+        return [None] * n
+    if ed is None or len(ed) == 0:
+        return [None] * n
+
+    earnings_idx = pd.to_datetime(ed.index)
+    if getattr(earnings_idx, "tz", None) is not None:
+        earnings_idx = earnings_idx.tz_localize(None)
+    earnings_dates = pd.Series(earnings_idx.normalize()).sort_values().reset_index(drop=True)
+
+    if "Date" in df.columns:
+        df_dates = pd.to_datetime(df["Date"]).dt.normalize().reset_index(drop=True)
+    else:
+        df_dates = pd.Series(pd.to_datetime(df.index).normalize()).reset_index(drop=True)
+
+    positions: list = []
+    for t in range(n):
+        bar_date = df_dates.iloc[t]
+        valid = earnings_dates[earnings_dates <= bar_date]
+        if valid.empty:
+            positions.append(None)
+            continue
+        anchor_date = valid.iloc[-1]
+        # First df row whose date is >= anchor_date is the anchor row in df coords.
+        ge_mask = df_dates >= anchor_date
+        if not ge_mask.any():
+            positions.append(None)
+            continue
+        positions.append(int(ge_mask.idxmax()))
+    return positions
 
 
 def _compute_custom_indicator(
@@ -474,6 +536,55 @@ def _compute_custom_indicator(
             ]
             parts = [f"{name}: {lvl:.2f} ({(lvl - close) / close * 100:+.1f}%)" for name, lvl in levels]
             out.append(" | ".join(parts))
+        return pd.Series(out, index=df.index)
+
+    if indicator in ("avwap_52wh", "avwap_52wl", "avwap_earnings"):
+        # Anchored VWAP: cumulative VWAP from a meaningful event date through t.
+        # Shows where the average buyer since that event sits — a proxy for which
+        # cohort of holders is in profit vs underwater.
+        import numpy as np
+
+        typ = (df["high"] + df["low"] + df["close"]) / 3
+        pv_arr = (typ * df["volume"]).values
+        v_arr = df["volume"].values
+        cum_pv = np.concatenate([[0.0], np.nancumsum(pv_arr)])
+        cum_v = np.concatenate([[0.0], np.nancumsum(v_arr)])
+        n = len(df)
+        lookback = 252  # one trading year
+
+        if indicator == "avwap_52wh":
+            label = "AVWAP-52wH"
+            col = df["high"].values
+            anchor_positions = [
+                max(0, t - lookback + 1) + int(np.nanargmax(col[max(0, t - lookback + 1) : t + 1]))
+                for t in range(n)
+            ]
+        elif indicator == "avwap_52wl":
+            label = "AVWAP-52wL"
+            col = df["low"].values
+            anchor_positions = [
+                max(0, t - lookback + 1) + int(np.nanargmin(col[max(0, t - lookback + 1) : t + 1]))
+                for t in range(n)
+            ]
+        else:  # avwap_earnings
+            label = "AVWAP-Earnings"
+            anchor_positions = _earnings_anchor_positions(df, symbol, n)
+
+        avwap = np.full(n, np.nan)
+        for t, a in enumerate(anchor_positions):
+            if a is None or a < 0 or a > t:
+                continue
+            seg_v = cum_v[t + 1] - cum_v[a]
+            if seg_v > 0:
+                avwap[t] = (cum_pv[t + 1] - cum_pv[a]) / seg_v
+
+        out = []
+        for close, av in zip(df["close"].values, avwap):
+            if pd.isna(av) or close <= 0:
+                out.append("N/A")
+                continue
+            offset = (close - av) / close * 100
+            out.append(f"{label}: {av:.2f} (close {offset:+.1f}%)")
         return pd.Series(out, index=df.index)
 
     if indicator == "aroon_25":
