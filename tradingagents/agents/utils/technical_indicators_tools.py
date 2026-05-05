@@ -1,6 +1,7 @@
 from langchain_core.tools import tool
 from typing import Annotated
 from tradingagents.dataflows.interface import route_to_vendor
+from tradingagents.dataflows.nse_fno import get_fno_oi_nse
 
 @tool
 def get_indicators(
@@ -30,3 +31,24 @@ def get_indicators(
         except ValueError as e:
             results.append(str(e))
     return "\n\n".join(results)
+
+
+@tool
+def get_fno_oi(
+    ticker: Annotated[str, "Ticker symbol (e.g. 'RELIANCE.NS')"],
+) -> str:
+    """
+    EOD F&O snapshot for an NSE-listed ticker — total Call/Put OI,
+    Put-Call Ratio, max-pain strike, and the top 3 OI strikes on each side
+    (which read as derivative-implied resistance/support).
+
+    For non-Indian tickers and Indian stocks not in the F&O segment,
+    returns a "not applicable" notice.
+
+    Args:
+        ticker (str): Ticker symbol (Indian listings: .NS or .BO suffix)
+
+    Returns:
+        str: Markdown F&O snapshot
+    """
+    return get_fno_oi_nse(ticker)

@@ -5,19 +5,24 @@ from tradingagents.agents.utils.agent_utils import (
     get_language_instruction,
     get_stock_data,
 )
+from tradingagents.agents.utils.technical_indicators_tools import get_fno_oi
 from tradingagents.dataflows.config import get_config
+from tradingagents.dataflows.nse_client import is_indian_ticker
 
 
 def create_market_analyst(llm):
 
     def market_analyst_node(state):
         current_date = state["trade_date"]
-        instrument_context = build_instrument_context(state["company_of_interest"])
+        ticker = state["company_of_interest"]
+        instrument_context = build_instrument_context(ticker)
 
         tools = [
             get_stock_data,
             get_indicators,
         ]
+        if is_indian_ticker(ticker):
+            tools.append(get_fno_oi)
 
         system_message = (
             """You are a trading assistant tasked with analyzing financial markets. Your role is to select the **most relevant indicators** for a given market condition or trading strategy from the following list. The goal is to choose up to **8 indicators** that provide complementary insights without redundancy. Categories and each category's indicators are:
@@ -64,6 +69,14 @@ Breakout Trigger:
 - Select indicators that provide diverse and complementary information. Avoid redundancy (e.g., do not select both rsi and stochrsi). Also briefly explain why they are suitable for the given market context. When you tool call, please use the exact name of the indicators provided above as they are defined parameters, otherwise your call will fail. Please make sure to call get_stock_data first to retrieve the CSV that is needed to generate indicators. Then use get_indicators with the specific indicator names. Write a very detailed and nuanced report of the trends you observe. Provide specific, actionable insights with supporting evidence to help traders make informed decisions.
 
 For SHORT-HORIZON / SWING setups specifically: prioritise the institutional-volume toolkit — combine `breakout_20`, `rvol_20`, `adx`, and `obv` with one trend filter (e.g. `close_50_sma` or `close_10_ema`). A 'BREAKOUT' from `breakout_20` confirmed by ADX > 25 and rising OBV is the highest-conviction swing entry. Always quote the actual `breakout_20` and `rvol_20` values rather than just describing them qualitatively."""
+            + ((
+                " For this Indian ticker, also call get_fno_oi(ticker) — "
+                "it returns the EOD F&O snapshot (total Call/Put OI, "
+                "Put-Call Ratio, max-pain strike, and top OI strikes which read "
+                "as derivative-implied resistance/support). Quote PCR and "
+                "max-pain when forming the swing thesis; PCR < 0.7 is "
+                "call-heavy/bullish-positioned, > 1.3 is put-heavy."
+            ) if is_indian_ticker(ticker) else "")
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
             + get_language_instruction()
         )
