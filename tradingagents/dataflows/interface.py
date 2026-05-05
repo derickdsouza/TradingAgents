@@ -11,6 +11,11 @@ from .y_finance import (
     get_insider_transactions as get_yfinance_insider_transactions,
 )
 from .yfinance_news import get_news_yfinance, get_global_news_yfinance
+from .gnews_india import (
+    get_news as get_gnews_india_news,
+    get_global_news as get_gnews_india_global_news,
+    get_insider_transactions as get_gnews_india_insider_transactions,
+)
 from .alpha_vantage import (
     get_stock as get_alpha_vantage_stock,
     get_indicator as get_alpha_vantage_indicator,
@@ -63,6 +68,7 @@ TOOLS_CATEGORIES = {
 VENDOR_LIST = [
     "yfinance",
     "alpha_vantage",
+    "gnews_india",
 ]
 
 # Mapping of methods to their vendor-specific implementations
@@ -98,14 +104,17 @@ VENDOR_METHODS = {
     "get_news": {
         "alpha_vantage": get_alpha_vantage_news,
         "yfinance": get_news_yfinance,
+        "gnews_india": get_gnews_india_news,
     },
     "get_global_news": {
         "yfinance": get_global_news_yfinance,
         "alpha_vantage": get_alpha_vantage_global_news,
+        "gnews_india": get_gnews_india_global_news,
     },
     "get_insider_transactions": {
         "alpha_vantage": get_alpha_vantage_insider_transactions,
         "yfinance": get_yfinance_insider_transactions,
+        "gnews_india": get_gnews_india_insider_transactions,
     },
 }
 
