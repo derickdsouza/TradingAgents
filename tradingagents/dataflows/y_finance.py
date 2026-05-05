@@ -155,6 +155,12 @@ def get_stock_stats_indicators_window(
             "Usage: Read alongside ADX and +DI. -DI > +DI = bearish bias; a -DI cross above +DI with rising ADX is the canonical Wilder short-entry / exit-long signal. "
             "Tips: When -DI is rising while price is still grinding higher, treat it as a divergence warning that the up-leg is losing breadth. Only act on -DI > +DI when ADX confirms (>20-25) — otherwise it's just chop."
         ),
+        "rv_30": (
+            "Realized Volatility (30-day, annualized) with 1-year percentile rank: stdev of daily log-returns over the last 30 sessions, scaled by √252, expressed in percent. "
+            "Returns `RV30: X.X% annualized | percentile: P (REGIME)` where REGIME ∈ {LOW (<20), NORMAL (20-80), HIGH (>80)}, plus a `| CONTRACTING (...)` flag when current RV ≤ 70% of RV from 30d ago. "
+            "Usage: ATR is in price units (good for stops, useless for cross-stock comparison). RV in percent + percentile tells you whether THIS stock is in a high, low, or normal vol regime *for itself*. "
+            "Tips: LOW + minervini_trend=PASS + tight_3w = textbook pre-breakout volatility contraction (the classic Minervini setup). HIGH percentile after a sustained rally = late-stage / climax warning. CONTRACTING flag often precedes VCP-COMPLETE — a strong leading entry timing signal."
+        ),
         "avwap_52wh": (
             "Anchored VWAP from the 52-week high date: cumulative VWAP starting the day the trailing-252 high printed. "
             "Returns `AVWAP-52wH: X.XX (close ±Y.Y%)`. The level is the average price paid by everyone who bought at/since the cycle peak — i.e. the cohort that's currently underwater on average. "
@@ -306,6 +312,7 @@ _CUSTOM_INDICATORS = {
     "obv", "rvol_20", "breakout_20", "guppy", "vsa", "chandelier", "aroon_25",
     "pivots_daily", "pivots_weekly",
     "avwap_52wh", "avwap_52wl", "avwap_earnings",
+    "rv_30",
     "minervini_trend", "pocket_pivot", "vcp", "tight_3w",
 }
 
@@ -585,6 +592,35 @@ def _compute_custom_indicator(
                 continue
             offset = (close - av) / close * 100
             out.append(f"{label}: {av:.2f} (close {offset:+.1f}%)")
+        return pd.Series(out, index=df.index)
+
+    if indicator == "rv_30":
+        # 30-day annualized realized volatility (log-return stdev × √252)
+        # plus a 1y rolling percentile rank for vol-regime classification.
+        import numpy as np
+
+        log_ret = np.log(df["close"] / df["close"].shift(1))
+        rv = log_ret.rolling(30).std() * np.sqrt(252) * 100  # in percent
+        # Rank today's rv within trailing 252 (inclusive). pct=True → 0..1; ×100 → 0..100.
+        rv_pctile = rv.rolling(252, min_periods=30).rank(pct=True) * 100
+        rv_30d_ago = rv.shift(30)
+        out = []
+        for r, p, r0 in zip(rv, rv_pctile, rv_30d_ago):
+            if pd.isna(r) or pd.isna(p):
+                out.append("N/A")
+                continue
+            if p < 20:
+                regime = "LOW"
+            elif p > 80:
+                regime = "HIGH"
+            else:
+                regime = "NORMAL"
+            contracting = ""
+            if not pd.isna(r0) and r0 > 0 and r <= 0.7 * r0:
+                contracting = " | CONTRACTING (rv down ≥30% vs 30d ago)"
+            out.append(
+                f"RV30: {r:.1f}% annualized | percentile: {p:.0f} ({regime}){contracting}"
+            )
         return pd.Series(out, index=df.index)
 
     if indicator == "aroon_25":
