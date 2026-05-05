@@ -155,6 +155,13 @@ def get_stock_stats_indicators_window(
             "Usage: Read alongside ADX and +DI. -DI > +DI = bearish bias; a -DI cross above +DI with rising ADX is the canonical Wilder short-entry / exit-long signal. "
             "Tips: When -DI is rising while price is still grinding higher, treat it as a divergence warning that the up-leg is losing breadth. Only act on -DI > +DI when ADX confirms (>20-25) — otherwise it's just chop."
         ),
+        "aroon_25": (
+            "Aroon Up / Down (25): Tushar Chande's trend-FRESHNESS indicator (distinct from ADX, which measures strength). "
+            "Aroon-Up = 100 means today printed the highest high of the last 26 bars (fresh new high); 0 means the high is stale. Aroon-Down is the mirror for lows. "
+            "Returns: `Aroon-Up: X | Aroon-Down: Y | spread: ±Z (TAG)` where TAG ∈ {BULLISH-FRESH (>50), BULLISH (10..50), NEUTRAL (-10..10), BEARISH (-50..-10), BEARISH-FRESH (<-50)}. "
+            "Usage: Detect AGING trends — rising price with falling Aroon-Up is a warning that new highs are getting harder to print, often preceding distribution. "
+            "Tips: BULLISH-FRESH + BULLISH-FAN guppy + breakout_20=BREAKOUT is a textbook entry. Aroon-Up dropping below 50 while price is still rising is the highest-quality early-exit signal in this toolkit."
+        ),
         "rvol_20": (
             "RVOL (20): Relative Volume vs 20-day average volume. Values >= 1.5 mean today is at least 1.5x the average. "
             "Usage: Confirm institutional participation in a breakout or reversal. RVOL >= 2 alongside a price breakout is the canonical institutional swing signal. "
@@ -265,7 +272,7 @@ def get_stock_stats_indicators_window(
 
 
 _CUSTOM_INDICATORS = {
-    "obv", "rvol_20", "breakout_20", "guppy", "vsa", "chandelier",
+    "obv", "rvol_20", "breakout_20", "guppy", "vsa", "chandelier", "aroon_25",
     "minervini_trend", "pocket_pivot", "vcp", "tight_3w",
 }
 
@@ -395,6 +402,43 @@ def _compute_custom_indicator(
             out.append(
                 f"CE long {ce_l:.2f} ({-long_dist:+.1f}%) | "
                 f"CE short {ce_s:.2f} ({short_dist:+.1f}%)"
+            )
+        return pd.Series(out, index=df.index)
+
+    if indicator == "aroon_25":
+        # Aroon Up / Down (Tushar Chande) — measures trend FRESHNESS, not strength.
+        # Aroon-Up = 100 means today printed the highest high in the last N+1 bars
+        # (a fresh new high); Aroon-Up = 0 means the high is stale (N bars old).
+        # Aroon-Down is the mirror for lows. The spread tags the regime.
+        n = 25
+        # argmax/argmin over rolling window of N+1 bars; index 0 = oldest, N = today.
+        # days_since_high = N - argmax_position  → today's high gives argmax = N → days_since = 0.
+        bars_since_high = df["high"].rolling(n + 1).apply(
+            lambda s: n - int(s.values.argmax()), raw=False
+        )
+        bars_since_low = df["low"].rolling(n + 1).apply(
+            lambda s: n - int(s.values.argmin()), raw=False
+        )
+        aroon_up = (n - bars_since_high) / n * 100
+        aroon_down = (n - bars_since_low) / n * 100
+        spread = aroon_up - aroon_down
+        out = []
+        for au, ad, sp in zip(aroon_up, aroon_down, spread):
+            if pd.isna(au) or pd.isna(ad):
+                out.append("N/A")
+                continue
+            if sp > 50:
+                tag = "BULLISH-FRESH"
+            elif sp > 10:
+                tag = "BULLISH"
+            elif sp >= -10:
+                tag = "NEUTRAL"
+            elif sp >= -50:
+                tag = "BEARISH"
+            else:
+                tag = "BEARISH-FRESH"
+            out.append(
+                f"Aroon-Up: {au:.0f} | Aroon-Down: {ad:.0f} | spread: {sp:+.0f} ({tag})"
             )
         return pd.Series(out, index=df.index)
 
