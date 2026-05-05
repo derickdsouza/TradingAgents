@@ -116,6 +116,14 @@ def get_stock_stats_indicators_window(
             "Usage: Set stop-loss levels and adjust position sizes based on current market volatility. "
             "Tips: It's a reactive measure, so use it as part of a broader risk management strategy."
         ),
+        "chandelier": (
+            "Chandelier Exit (N=22, k=3 ATR): Chuck LeBeau's ATR-based trailing stops. "
+            "Reports both stop levels per bar with a signed offset from close — negative = stop is BELOW close, positive = ABOVE. "
+            "`CE long X.XX (-Y.Y%)` is the trailing stop for an open long (Y.Y% drawdown buffer). "
+            "`CE short X.XX (+Y.Y%)` is the trailing stop for an open short. A negative offset on the short side means close has rallied past it — the short thesis is invalidated and the long side is in control. "
+            "Usage: Pair with `minervini_trend=PASS` and `breakout_20=BREAKOUT` for swing-stop placement on entry — the canonical Turtle / Minervini-style trailing stop. "
+            "Tips: Quote the actual stop level when recommending entries, not just the percentage. A close that drops below CE long is the textbook exit signal — don't override it with discretion."
+        ),
         # Volume-Based Indicators
         "vwma": (
             "VWMA: A moving average weighted by volume. "
@@ -257,7 +265,7 @@ def get_stock_stats_indicators_window(
 
 
 _CUSTOM_INDICATORS = {
-    "obv", "rvol_20", "breakout_20", "guppy", "vsa",
+    "obv", "rvol_20", "breakout_20", "guppy", "vsa", "chandelier",
     "minervini_trend", "pocket_pivot", "vcp", "tight_3w",
 }
 
@@ -353,6 +361,41 @@ def _compute_custom_indicator(
                 out.append(
                     f"in-range (RVOL {rv:.2f}x; {pct_to_high:.1f}% to 20d high, {pct_to_low:.1f}% to 20d low)"
                 )
+        return pd.Series(out, index=df.index)
+
+    if indicator == "chandelier":
+        # Chandelier Exit (Chuck LeBeau): ATR-based trailing stops.
+        # Long stop  = highest_high(N) − k × ATR(N)
+        # Short stop = lowest_low(N)  + k × ATR(N)
+        # Defaults N=22, k=3 with Wilder-smoothed ATR (alpha=1/N) — the
+        # textbook variant used by Minervini-style swing traders.
+        n = 22
+        k = 3.0
+        prev_close = df["close"].shift(1)
+        tr = pd.concat(
+            [
+                df["high"] - df["low"],
+                (df["high"] - prev_close).abs(),
+                (df["low"] - prev_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        atr = tr.ewm(alpha=1 / n, adjust=False).mean()
+        highest = df["high"].rolling(n).max()
+        lowest = df["low"].rolling(n).min()
+        ce_long = highest - k * atr
+        ce_short = lowest + k * atr
+        out = []
+        for close, ce_l, ce_s in zip(df["close"], ce_long, ce_short):
+            if pd.isna(ce_l) or pd.isna(ce_s) or close <= 0:
+                out.append("N/A")
+                continue
+            long_dist = (close - ce_l) / close * 100   # how far close sits above the long stop
+            short_dist = (ce_s - close) / close * 100  # how far the short stop sits above close
+            out.append(
+                f"CE long {ce_l:.2f} ({-long_dist:+.1f}%) | "
+                f"CE short {ce_s:.2f} ({short_dist:+.1f}%)"
+            )
         return pd.Series(out, index=df.index)
 
     if indicator == "vsa":
