@@ -152,6 +152,16 @@ class TradingAgentsGraph:
             if effort:
                 kwargs["effort"] = effort
 
+        max_tokens = self.config.get("max_tokens")
+        if max_tokens is not None:
+            # Google's underlying SDK calls this max_output_tokens; the rest
+            # all accept max_tokens. The clients' passthrough lists gate
+            # which key actually reaches the model constructor.
+            if provider == "google":
+                kwargs["max_output_tokens"] = max_tokens
+            else:
+                kwargs["max_tokens"] = max_tokens
+
         return kwargs
 
     def _create_tool_nodes(self) -> Dict[str, ToolNode]:

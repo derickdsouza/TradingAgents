@@ -64,6 +64,10 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "google_thinking_level": None,      # "high", "minimal", etc.
     "openai_reasoning_effort": None,    # "medium", "high", "low"
     "anthropic_effort": None,           # "high", "medium", "low"
+    # Max output tokens per LLM call. Defaults too small here truncate
+    # dense analyst reports mid-table. Mapped to the provider's native
+    # parameter (Google uses max_output_tokens; the rest use max_tokens).
+    "max_tokens": 16384,
     # Checkpoint/resume: when True, LangGraph saves state after each node
     # so a crashed run can resume from the last successful step.
     "checkpoint_enabled": False,
