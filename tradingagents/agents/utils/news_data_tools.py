@@ -1,6 +1,7 @@
 from langchain_core.tools import tool
 from typing import Annotated, Optional
 from tradingagents.dataflows.interface import route_to_vendor
+from tradingagents.dataflows.nse_announcements import get_corporate_announcements_nse
 
 @tool
 def get_news(
@@ -48,6 +49,32 @@ def get_global_news(
         str: A formatted string containing global news data
     """
     return route_to_vendor("get_global_news", curr_date, look_back_days, limit, ticker=ticker)
+
+@tool
+def get_corporate_announcements(
+    ticker: Annotated[str, "Ticker symbol (e.g. 'TCS.NS', 'RELIANCE.BO')"],
+    look_back_days: Annotated[int, "Look-back window in days"] = 30,
+    limit: Annotated[int, "Max announcements to return"] = 25,
+) -> str:
+    """
+    Retrieve SEBI-mandated corporate announcements filed with NSE for an
+    Indian-listed ticker — board meetings, results, dividends, promoter
+    pledge changes, insider transactions (Reg 7(2)), bulk/block deals.
+    These are catalysts that move Indian stocks but are not in Yahoo news.
+
+    For non-Indian tickers (no .NS/.BO suffix) returns a "not applicable"
+    notice — call only when analyzing Indian listings.
+
+    Args:
+        ticker (str): Ticker symbol (Indian listings: .NS or .BO suffix)
+        look_back_days (int): Look-back window in days (default 30)
+        limit (int): Max announcements to return (default 25)
+
+    Returns:
+        str: Markdown-formatted list of announcements
+    """
+    return get_corporate_announcements_nse(ticker, look_back_days, limit)
+
 
 @tool
 def get_insider_transactions(
