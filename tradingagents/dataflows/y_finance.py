@@ -137,6 +137,16 @@ def get_stock_stats_indicators_window(
             "Usage: ADX > 25 indicates a trending market suitable for trend-following / breakout entries; ADX < 20 indicates a range-bound market favoring mean-reversion. "
             "Tips: Combine with +DI/-DI for direction. A rising ADX above 25 alongside a price breakout is a high-quality swing setup."
         ),
+        "pdi": (
+            "+DI (Plus Directional Indicator, 14): The bullish half of the Wilder DMI system. Measures the share of recent price movement attributable to up-days, on a 0-100 scale. "
+            "Usage: Read alongside ADX and -DI to give ADX a direction. +DI > -DI = bullish bias; the wider the spread, the more one-sided the trend. "
+            "Tips: A +DI/-DI crossover (where +DI crosses above -DI) while ADX is rising above 25 is the canonical Wilder long-entry trigger. Useless without ADX context — a high +DI in a low-ADX (ADX<20) regime just means a noisy uptrend with no follow-through."
+        ),
+        "ndi": (
+            "-DI (Minus Directional Indicator, 14): The bearish half of the Wilder DMI system. Measures the share of recent price movement attributable to down-days, on a 0-100 scale. "
+            "Usage: Read alongside ADX and +DI. -DI > +DI = bearish bias; a -DI cross above +DI with rising ADX is the canonical Wilder short-entry / exit-long signal. "
+            "Tips: When -DI is rising while price is still grinding higher, treat it as a divergence warning that the up-leg is losing breadth. Only act on -DI > +DI when ADX confirms (>20-25) — otherwise it's just chop."
+        ),
         "rvol_20": (
             "RVOL (20): Relative Volume vs 20-day average volume. Values >= 1.5 mean today is at least 1.5x the average. "
             "Usage: Confirm institutional participation in a breakout or reversal. RVOL >= 2 alongside a price breakout is the canonical institutional swing signal. "

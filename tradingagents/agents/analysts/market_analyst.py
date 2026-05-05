@@ -61,6 +61,8 @@ Minervini SEPA Indicators (institutional swing setups):
 
 Trend-Strength / Quality Indicators:
 - adx: ADX: Average Directional Index, 0-100. Usage: ADX > 25 = trending market (favor breakouts/trend-following); ADX < 20 = range-bound (favor mean reversion). Tips: A rising ADX above 25 with a price breakout is a high-quality swing setup.
+- pdi: +DI (Plus Directional Indicator, 14) — the bullish half of Wilder's DMI. Usage: Read with adx + ndi to give ADX a direction. +DI > -DI = bullish bias; the wider the spread, the cleaner the trend. Tips: A +DI/-DI bullish crossover with ADX rising above 25 is Wilder's textbook long entry. Avoid acting in low-ADX (<20) regimes — high +DI there is just noise.
+- ndi: -DI (Minus Directional Indicator, 14) — the bearish half of Wilder's DMI. Usage: -DI > +DI = bearish bias / exit-long signal. Tips: -DI rising while price still grinds higher = divergence warning that the up-leg is losing breadth. Confirm with ADX > 20-25 before acting on a -DI > +DI cross.
 - guppy: Guppy MMA (GMMA) — short EMA ribbon (3,5,8,10,12,15) vs long EMA ribbon (30,35,40,45,50,60). Returns a regime label: BULLISH-FAN, BULLISH-COMPRESS, BEARISH-FAN, BEARISH-COMPRESS, or TRANSITION. Usage: Top-tier trend-quality filter — BULLISH-FAN + breakout_20=BREAKOUT is a textbook swing entry. Tips: TRANSITION often precedes either continuation or reversal — disambiguate with OBV slope.
 
 Breakout Trigger:
