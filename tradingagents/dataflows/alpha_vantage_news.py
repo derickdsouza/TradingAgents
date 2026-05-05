@@ -22,7 +22,7 @@ def get_news(ticker, start_date, end_date) -> dict[str, str] | str:
 
     return _make_api_request("NEWS_SENTIMENT", params)
 
-def get_global_news(curr_date, look_back_days: int = 7, limit: int = 50) -> dict[str, str] | str:
+def get_global_news(curr_date, look_back_days: int = 7, limit: int = 50, ticker: str | None = None) -> dict[str, str] | str:
     """Returns global market news & sentiment data without ticker-specific filtering.
 
     Covers broad market topics like financial markets, economy, and more.
@@ -31,10 +31,14 @@ def get_global_news(curr_date, look_back_days: int = 7, limit: int = 50) -> dict
         curr_date: Current date in yyyy-mm-dd format.
         look_back_days: Number of days to look back (default 7).
         limit: Maximum number of articles (default 50).
+        ticker: Accepted for vendor-interface parity with the yfinance path
+            (which uses it to switch to India-macro queries). Alpha Vantage's
+            NEWS_SENTIMENT API has no India topic, so the value is ignored.
 
     Returns:
         Dictionary containing global news sentiment data or JSON string.
     """
+    del ticker
     from datetime import datetime, timedelta
 
     # Calculate start date

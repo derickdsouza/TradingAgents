@@ -25,6 +25,13 @@ def get_global_news(
     curr_date: Annotated[str, "Current date in yyyy-mm-dd format"],
     look_back_days: Annotated[Optional[int], "Days to look back; omit to use the configured default"] = None,
     limit: Annotated[Optional[int], "Max articles to return; omit to use the configured default"] = None,
+    ticker: Annotated[
+        str,
+        "Optional ticker (e.g. 'TCS.NS', 'AAPL'). Pass the instrument under "
+        "analysis so the search uses region-aware macro queries — Indian "
+        "tickers (.NS/.BO) trigger RBI/CPI/FII-DII/INR queries instead of "
+        "the default US-Fed/CPI set.",
+    ] = None,
 ) -> str:
     """
     Retrieve global news data.
@@ -36,11 +43,11 @@ def get_global_news(
         curr_date (str): Current date in yyyy-mm-dd format
         look_back_days (int): Number of days to look back; omit to inherit config
         limit (int): Maximum number of articles to return; omit to inherit config
-
+        ticker (str): Optional ticker for region-aware queries
     Returns:
         str: A formatted string containing global news data
     """
-    return route_to_vendor("get_global_news", curr_date, look_back_days, limit)
+    return route_to_vendor("get_global_news", curr_date, look_back_days, limit, ticker=ticker)
 
 @tool
 def get_insider_transactions(

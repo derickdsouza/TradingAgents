@@ -108,10 +108,36 @@ def get_news_yfinance(
         return f"Error fetching news for {ticker}: {str(e)}"
 
 
+_REGION_GLOBAL_NEWS_QUERIES = {
+    "us": [
+        "stock market economy",
+        "Federal Reserve interest rates",
+        "inflation economic outlook",
+        "global markets trading",
+    ],
+    "in": [
+        "RBI monetary policy India",
+        "India CPI WPI inflation",
+        "FII DII flows India equities",
+        "INR USD Brent crude oil India",
+    ],
+}
+
+
+def _region_for_ticker(ticker: str | None) -> str:
+    if not ticker:
+        return "us"
+    t = ticker.upper()
+    if t.endswith(".NS") or t.endswith(".BO"):
+        return "in"
+    return "us"
+
+
 def get_global_news_yfinance(
     curr_date: str,
     look_back_days: Optional[int] = None,
     limit: Optional[int] = None,
+    ticker: str | None = None,
 ) -> str:
     """
     Retrieve global/macro economic news using yfinance Search.
@@ -122,6 +148,9 @@ def get_global_news_yfinance(
             ``global_news_lookback_days`` from the active config.
         limit: Maximum number of articles to return. ``None`` falls back to
             ``global_news_article_limit`` from the active config.
+        ticker: Optional ticker. When suffixed .NS/.BO, India-macro
+            queries (RBI, CPI, FII/DII, INR/oil) are used instead of
+            the US-Fed/CPI default. No effect for other tickers.
 
     Returns:
         Formatted string containing global news articles
@@ -131,7 +160,8 @@ def get_global_news_yfinance(
         look_back_days = config["global_news_lookback_days"]
     if limit is None:
         limit = config["global_news_article_limit"]
-    search_queries = config["global_news_queries"]
+    region = _region_for_ticker(ticker)
+    search_queries = _REGION_GLOBAL_NEWS_QUERIES[region]
 
     all_news = []
     seen_titles = set()
