@@ -955,9 +955,9 @@ _WEASYPRINT_STYLE = """
 @page {
   size: letter;
   margin: 22mm 18mm 22mm 18mm;
-  @bottom-left   { content: string(doctitle); font-family: 'Georgia', serif; font-size: 8pt; color: #6b7280; }
-  @bottom-right  { content: "page " counter(page) " of " counter(pages); font-family: 'Helvetica Neue', sans-serif; font-size: 8pt; color: #6b7280; }
-  @top-right     { content: string(section); font-family: 'Helvetica Neue', sans-serif; font-size: 8pt; color: #9ca3af; letter-spacing: 0.06em; text-transform: uppercase; }
+  @bottom-left   { content: string(doctitle); font-family: 'Inter', 'Helvetica Neue', sans-serif; font-size: 8pt; color: #6b7280; }
+  @bottom-right  { content: "page " counter(page) " of " counter(pages); font-family: 'Inter', 'Helvetica Neue', sans-serif; font-size: 8pt; color: #6b7280; }
+  @top-right     { content: string(section); font-family: 'Inter', 'Helvetica Neue', sans-serif; font-size: 8pt; color: #9ca3af; letter-spacing: 0.06em; text-transform: uppercase; }
 }
 @page :first {
   @top-right     { content: ""; }
@@ -966,18 +966,20 @@ _WEASYPRINT_STYLE = """
 }
 
 body {
-  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  font-family: 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif;
   font-size: 10pt;
   line-height: 1.45;
   color: #111827;
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "ss01", "cv11";
 }
 
 h1, h2, h3, h4 {
   page-break-after: avoid;
   break-after: avoid;
-  font-family: 'Georgia', 'Times New Roman', serif;
+  font-family: 'Inter Display', 'Inter', 'Helvetica Neue', sans-serif;
   color: #111827;
+  font-feature-settings: "ss01", "cv11";
 }
 
 h1 {
@@ -985,10 +987,11 @@ h1 {
   bookmark-level: 1;
   bookmark-label: content();
   font-size: 22pt;
+  font-weight: 700;
   margin: 0 0 6pt 0;
   padding-bottom: 8pt;
   border-bottom: 2pt solid #1e3a8a;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
 }
 
 h2 {
@@ -998,31 +1001,35 @@ h2 {
   page-break-before: auto;
   break-before: auto;
   font-size: 14pt;
+  font-weight: 600;
   color: #ffffff;
   background: #1e3a8a;
   padding: 8pt 14pt;
   margin: 22pt -10mm 12pt -10mm;
   border-left: 4pt solid #f59e0b;
-  letter-spacing: 0.01em;
+  letter-spacing: -0.005em;
 }
 
 h3 {
   bookmark-level: 3;
   font-size: 12pt;
+  font-weight: 600;
   margin-top: 16pt;
   margin-bottom: 4pt;
   color: #1e3a8a;
   border-bottom: 0.5pt solid #d1d5db;
   padding-bottom: 2pt;
+  letter-spacing: -0.01em;
 }
 
 h4 {
-  font-size: 10.5pt;
+  font-size: 9.5pt;
+  font-weight: 600;
   margin-top: 12pt;
   margin-bottom: 2pt;
   color: #374151;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
 }
 
 p { margin: 6pt 0; }
@@ -1100,7 +1107,7 @@ a { color: #1e3a8a; text-decoration: none; }
   padding: 4pt 12pt;
   margin: 4pt 0;
   font-weight: 600;
-  font-family: 'Helvetica Neue', sans-serif;
+  font-family: 'Inter', 'Helvetica Neue', sans-serif;
   font-size: 10pt;
   letter-spacing: 0.04em;
   border-radius: 3pt;
