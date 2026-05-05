@@ -929,26 +929,201 @@ def _xhtml2pdf_styling(body_html: str) -> tuple[str, str]:
     return html_doc, body_html
 
 
+_PROPOSAL_RE = __import__("re").compile(
+    r"FINAL TRANSACTION PROPOSAL:\s*(?:<strong>)?\s*\*{0,2}\s*(BUY|SELL|HOLD)\s*\*{0,2}\s*(?:</strong>)?",
+    __import__("re").IGNORECASE,
+)
+
+
+def _wrap_proposal_callouts(html: str) -> str:
+    """Wrap each FINAL TRANSACTION PROPOSAL: BUY/SELL/HOLD line in a styled callout."""
+    def sub(m):
+        verdict = m.group(1).upper()
+        return (
+            f'<span class="ta-proposal ta-proposal-{verdict.lower()}">'
+            f'FINAL TRANSACTION PROPOSAL: <span class="ta-proposal-verdict">{verdict}</span>'
+            f'</span>'
+        )
+    return _PROPOSAL_RE.sub(sub, html)
+
+
+# WeasyPrint stylesheet. Design intent: financial-broadsheet feel — restrained
+# navy/gold palette, bold banded section headings, monospace tabular numerals
+# for data tables, page footer with the report title plus page numbering, and
+# clickable PDF bookmarks per heading. Tuned for letter-size A-style reports.
+_WEASYPRINT_STYLE = """
+@page {
+  size: letter;
+  margin: 22mm 18mm 22mm 18mm;
+  @bottom-left   { content: string(doctitle); font-family: 'Georgia', serif; font-size: 8pt; color: #6b7280; }
+  @bottom-right  { content: "page " counter(page) " of " counter(pages); font-family: 'Helvetica Neue', sans-serif; font-size: 8pt; color: #6b7280; }
+  @top-right     { content: string(section); font-family: 'Helvetica Neue', sans-serif; font-size: 8pt; color: #9ca3af; letter-spacing: 0.06em; text-transform: uppercase; }
+}
+@page :first {
+  @top-right     { content: ""; }
+  @bottom-left   { content: ""; }
+  @bottom-right  { content: ""; }
+}
+
+body {
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  font-size: 10pt;
+  line-height: 1.45;
+  color: #111827;
+  font-variant-numeric: tabular-nums;
+}
+
+h1, h2, h3, h4 {
+  page-break-after: avoid;
+  break-after: avoid;
+  font-family: 'Georgia', 'Times New Roman', serif;
+  color: #111827;
+}
+
+h1 {
+  string-set: doctitle content();
+  bookmark-level: 1;
+  bookmark-label: content();
+  font-size: 22pt;
+  margin: 0 0 6pt 0;
+  padding-bottom: 8pt;
+  border-bottom: 2pt solid #1e3a8a;
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  string-set: section content();
+  bookmark-level: 2;
+  bookmark-label: content();
+  page-break-before: auto;
+  break-before: auto;
+  font-size: 14pt;
+  color: #ffffff;
+  background: #1e3a8a;
+  padding: 8pt 14pt;
+  margin: 22pt -10mm 12pt -10mm;
+  border-left: 4pt solid #f59e0b;
+  letter-spacing: 0.01em;
+}
+
+h3 {
+  bookmark-level: 3;
+  font-size: 12pt;
+  margin-top: 16pt;
+  margin-bottom: 4pt;
+  color: #1e3a8a;
+  border-bottom: 0.5pt solid #d1d5db;
+  padding-bottom: 2pt;
+}
+
+h4 {
+  font-size: 10.5pt;
+  margin-top: 12pt;
+  margin-bottom: 2pt;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+p { margin: 6pt 0; }
+strong { color: #111827; }
+em { color: #4b5563; }
+
+ul, ol { margin: 6pt 0 6pt 18pt; padding: 0; }
+li { margin: 2pt 0; }
+
+table {
+  border-collapse: collapse;
+  margin: 8pt 0 12pt 0;
+  width: 100%;
+  page-break-inside: avoid;
+  break-inside: avoid;
+  font-size: 9pt;
+  font-variant-numeric: tabular-nums;
+}
+thead { display: table-header-group; }
+th {
+  background: #1f2937;
+  color: #ffffff;
+  font-weight: 600;
+  text-align: left;
+  padding: 5pt 8pt;
+  border: 0;
+  letter-spacing: 0.02em;
+}
+td {
+  padding: 4pt 8pt;
+  border-bottom: 0.5pt solid #e5e7eb;
+}
+tbody tr:nth-child(even) td { background: #f9fafb; }
+
+code {
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  font-size: 8.5pt;
+  background: #f3f4f6;
+  padding: 1pt 3pt;
+  border-radius: 2pt;
+}
+pre {
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  font-size: 8.5pt;
+  background: #f3f4f6;
+  padding: 8pt 10pt;
+  border-left: 3pt solid #1e3a8a;
+  page-break-inside: avoid;
+  break-inside: avoid;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+blockquote {
+  margin: 8pt 0;
+  padding: 4pt 12pt;
+  border-left: 3pt solid #f59e0b;
+  background: #fffbeb;
+  color: #374151;
+  font-style: italic;
+}
+
+hr {
+  border: 0;
+  height: 0.5pt;
+  background: #d1d5db;
+  margin: 14pt 0;
+}
+
+a { color: #1e3a8a; text-decoration: none; }
+
+/* FINAL TRANSACTION PROPOSAL callouts. The colour signals trade direction at a glance. */
+.ta-proposal {
+  display: inline-block;
+  padding: 4pt 12pt;
+  margin: 4pt 0;
+  font-weight: 600;
+  font-family: 'Helvetica Neue', sans-serif;
+  font-size: 10pt;
+  letter-spacing: 0.04em;
+  border-radius: 3pt;
+  color: #ffffff;
+}
+.ta-proposal-buy  { background: #047857; }
+.ta-proposal-sell { background: #b91c1c; }
+.ta-proposal-hold { background: #4b5563; }
+.ta-proposal-verdict { font-weight: 700; letter-spacing: 0.08em; }
+"""
+
+
 def _weasyprint_styling(body_html: str) -> str:
     """Build the html_doc tuned for WeasyPrint.
 
     WeasyPrint reads system fonts via fontconfig+pango, so the manual
-    @font-face workaround xhtml2pdf needs is unnecessary. Emoji also resolve
-    through system fonts, so the Twemoji <img> substitution is skipped.
-    The CSS rules here are the same shape xhtml2pdf gets — section bands,
-    callouts, footers etc. land in a follow-up that designs a real stylesheet.
+    @font-face and Twemoji-as-img workarounds xhtml2pdf needs are unnecessary.
+    The full stylesheet (page footers, banded section headings, BUY/SELL/HOLD
+    callouts, zebra tables, PDF bookmarks) lives in ``_WEASYPRINT_STYLE``.
     """
-    style = (
-        "body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 10pt; line-height: 1.4; }"
-        "h1 { font-size: 18pt; } h2 { font-size: 14pt; margin-top: 18pt; }"
-        "h3 { font-size: 12pt; } h4 { font-size: 11pt; }"
-        "table { border-collapse: collapse; margin: 6pt 0; }"
-        "th, td { border: 1px solid #999; padding: 4pt 6pt; }"
-        "code, pre { font-family: 'Menlo', 'Courier New', monospace; font-size: 9pt; }"
-        "pre { background: #f4f4f4; padding: 6pt; }"
-    )
+    body_html = _wrap_proposal_callouts(body_html)
     return (
-        f"<html><head><meta charset='utf-8'><style>{style}</style></head>"
+        f"<html><head><meta charset='utf-8'><style>{_WEASYPRINT_STYLE}</style></head>"
         f"<body>{body_html}</body></html>"
     )
 
