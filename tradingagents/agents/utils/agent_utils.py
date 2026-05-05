@@ -23,17 +23,26 @@ from tradingagents.agents.utils.news_data_tools import (
 def get_language_instruction() -> str:
     """Return a prompt instruction for the configured output language.
 
-    Returns empty string when English (default), so no extra tokens are used.
-    Applied to every agent whose output reaches the saved report —
-    analysts, researchers, debaters, research manager, trader, and
-    portfolio manager — so a non-English run produces a fully localized
-    report rather than a mix of languages.
+    Always emits a directive — even for English — because Chinese-trained
+    providers (e.g. GLM) sometimes code-switch into CJK tokens mid-sentence
+    when no explicit anti-code-switch instruction is present. Applied to
+    every agent whose output reaches the saved report — analysts,
+    researchers, debaters, research manager, trader, and portfolio manager
+    — so a non-English run produces a fully localized report rather than a
+    mix of languages.
     """
     from tradingagents.dataflows.config import get_config
-    lang = get_config().get("output_language", "English")
-    if lang.strip().lower() == "english":
-        return ""
-    return f" Write your entire response in {lang}."
+    lang = get_config().get("output_language", "English").strip()
+    if lang.lower() == "english":
+        return (
+            " Write your entire response in English only. "
+            "Do not insert words or characters from any other script "
+            "(no Chinese / CJK, no Devanagari, no Arabic, etc.)."
+        )
+    return (
+        f" Write your entire response in {lang} only. "
+        f"Do not code-switch into any other language mid-sentence."
+    )
 
 
 HORIZONS = {
