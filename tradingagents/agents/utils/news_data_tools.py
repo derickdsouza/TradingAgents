@@ -2,6 +2,7 @@ from langchain_core.tools import tool
 from typing import Annotated, Optional
 from tradingagents.dataflows.interface import route_to_vendor
 from tradingagents.dataflows.nse_announcements import get_corporate_announcements_nse
+from tradingagents.dataflows.india_macro import get_india_macro as _get_india_macro
 
 @tool
 def get_news(
@@ -74,6 +75,28 @@ def get_corporate_announcements(
         str: Markdown-formatted list of announcements
     """
     return get_corporate_announcements_nse(ticker, look_back_days, limit)
+
+
+@tool
+def get_india_macro(
+    curr_date: Annotated[str, "Current date in yyyy-mm-dd format (informational)"] = None,
+) -> str:
+    """
+    Snapshot of India macro-context drivers: INR/USD, Brent crude, Nifty 50,
+    Nifty Bank, India VIX, and the most-recent EOD FII vs DII cash-market
+    net flow. These are the numeric factors that dominate Indian equity
+    price action and are not visible in headline-style news.
+
+    Use only when analyzing Indian-listed (.NS/.BO) tickers — for non-Indian
+    tickers the global macro is already covered by get_global_news.
+
+    Args:
+        curr_date (str): Current date (informational; data is live EOD)
+
+    Returns:
+        str: Markdown summary table + institutional flow
+    """
+    return _get_india_macro(curr_date)
 
 
 @tool
