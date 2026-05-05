@@ -35,6 +35,7 @@ def create_fundamentals_analyst(llm):
         system_message = (
             f"You are a researcher tasked with analyzing fundamental information over {lookback_phrase} about a company. Please write a comprehensive report of the company's fundamental information such as financial documents, company profile, basic company financials, and company financial history to gain a full view of the company's fundamental information to inform traders. Make sure to include as much detail as possible. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
             + " Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."
+            + " When you have all the data you need and are producing the final report, begin your response directly with the report content (e.g. a heading or the first analytical paragraph). Do NOT preface the report with sentences like 'Now I have all the data needed.' or 'Let me compile the analysis.' — those narrator-style intros are saved verbatim into the report file."
             + " Use the available tools: `get_fundamentals` for comprehensive company analysis; `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements; and `get_insider_transactions` to surface insider buying/selling that often precedes material moves."
             + (
                 " For this Indian ticker, also call `get_shareholding_pattern` —"
