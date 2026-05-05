@@ -28,6 +28,12 @@ from .alpha_vantage import (
     get_global_news as get_alpha_vantage_global_news,
 )
 from .alpha_vantage_common import AlphaVantageRateLimitError
+from .screener_in import (
+    get_fundamentals as get_screener_fundamentals,
+    get_balance_sheet as get_screener_balance_sheet,
+    get_cashflow as get_screener_cashflow,
+    get_income_statement as get_screener_income_statement,
+)
 
 # Configuration and routing logic
 from .config import get_config
@@ -69,6 +75,7 @@ VENDOR_LIST = [
     "yfinance",
     "alpha_vantage",
     "gnews_india",
+    "screener_in",
 ]
 
 # Mapping of methods to their vendor-specific implementations
@@ -87,18 +94,22 @@ VENDOR_METHODS = {
     "get_fundamentals": {
         "alpha_vantage": get_alpha_vantage_fundamentals,
         "yfinance": get_yfinance_fundamentals,
+        "screener_in": get_screener_fundamentals,
     },
     "get_balance_sheet": {
         "alpha_vantage": get_alpha_vantage_balance_sheet,
         "yfinance": get_yfinance_balance_sheet,
+        "screener_in": get_screener_balance_sheet,
     },
     "get_cashflow": {
         "alpha_vantage": get_alpha_vantage_cashflow,
         "yfinance": get_yfinance_cashflow,
+        "screener_in": get_screener_cashflow,
     },
     "get_income_statement": {
         "alpha_vantage": get_alpha_vantage_income_statement,
         "yfinance": get_yfinance_income_statement,
+        "screener_in": get_screener_income_statement,
     },
     # news_data
     "get_news": {
