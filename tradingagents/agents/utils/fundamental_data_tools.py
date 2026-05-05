@@ -1,6 +1,7 @@
 from langchain_core.tools import tool
 from typing import Annotated
 from tradingagents.dataflows.interface import route_to_vendor
+from tradingagents.dataflows.nse_shareholding import get_shareholding_pattern_nse
 
 
 @tool
@@ -75,3 +76,26 @@ def get_income_statement(
         str: A formatted report containing income statement data
     """
     return route_to_vendor("get_income_statement", ticker, freq, curr_date)
+
+
+@tool
+def get_shareholding_pattern(
+    ticker: Annotated[str, "Ticker symbol (e.g. 'TCS.NS', 'RELIANCE.BO')"],
+    quarters: Annotated[int, "Number of past quarters to include"] = 8,
+) -> str:
+    """
+    Retrieve the SEBI-mandated shareholding-pattern history for an
+    Indian-listed ticker — quarterly promoter %, public %, and current
+    promoter pledge %. Pledge above 10-20% is a recognised risk signal.
+
+    For non-Indian tickers (no .NS/.BO suffix) returns a "not applicable"
+    notice.
+
+    Args:
+        ticker (str): Ticker symbol (Indian listings: .NS or .BO suffix)
+        quarters (int): Past quarters to include (default 8)
+
+    Returns:
+        str: Markdown table of shareholding history + pledge note
+    """
+    return get_shareholding_pattern_nse(ticker, quarters)
