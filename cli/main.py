@@ -947,6 +947,17 @@ def _wrap_proposal_callouts(html: str) -> str:
     return _PROPOSAL_RE.sub(sub, html)
 
 
+_ANALYST_H3_RE = __import__("re").compile(
+    r"<h3>((?:Market|News|Social|Fundamentals)\s+Analyst)</h3>",
+    __import__("re").IGNORECASE,
+)
+
+
+def _wrap_analyst_headings(html: str) -> str:
+    """Tag analyst H3s with .ta-analyst so CSS can render them as a chip."""
+    return _ANALYST_H3_RE.sub(r'<h3 class="ta-analyst">\1</h3>', html)
+
+
 # WeasyPrint stylesheet. Design intent: financial-broadsheet feel — restrained
 # navy/gold palette, bold banded section headings, monospace tabular numerals
 # for data tables, page footer with the report title plus page numbering, and
@@ -1117,6 +1128,26 @@ a { color: #1e3a8a; text-decoration: none; }
 .ta-proposal-sell { background: #b91c1c; }
 .ta-proposal-hold { background: #4b5563; }
 .ta-proposal-verdict { font-weight: 700; letter-spacing: 0.08em; }
+
+/* Analyst-name headings inside "I. Analyst Team Reports". Slanted amber chip
+   that's distinct from regular h3s but lighter than the navy h2 bands, so the
+   reader still feels the section hierarchy. */
+h3.ta-analyst {
+  display: inline-block;
+  font-family: 'Inter Display', 'Inter', sans-serif;
+  font-size: 13pt;
+  font-weight: 600;
+  font-style: italic;
+  color: #92400e;
+  background: #fef3c7;
+  border-left: 4pt solid #f59e0b;
+  border-bottom: 0;
+  padding: 5pt 14pt 5pt 12pt;
+  margin: 16pt 0 8pt 0;
+  letter-spacing: 0;
+  page-break-after: avoid;
+  break-after: avoid;
+}
 """
 
 
@@ -1129,6 +1160,7 @@ def _weasyprint_styling(body_html: str) -> str:
     callouts, zebra tables, PDF bookmarks) lives in ``_WEASYPRINT_STYLE``.
     """
     body_html = _wrap_proposal_callouts(body_html)
+    body_html = _wrap_analyst_headings(body_html)
     return (
         f"<html><head><meta charset='utf-8'><style>{_WEASYPRINT_STYLE}</style></head>"
         f"<body>{body_html}</body></html>"
@@ -1238,6 +1270,33 @@ def _strip_preamble(text: str) -> str:
     return text
 
 
+def _strip_outer_hrules(text: str) -> str:
+    """Drop leading/trailing markdown horizontal-rule lines from analyst output.
+
+    Analysts often bracket their report with `---` separators. When such a
+    block is wrapped under a `### Market Analyst` heading the leading `---`
+    becomes a redundant second line directly under the heading; the trailing
+    one duplicates the section break. Strip both — preserves any `---` used
+    mid-content.
+    """
+    if not text:
+        return text
+    lines = text.splitlines()
+    while lines and lines[0].strip() in ("", "---", "***", "___"):
+        if lines[0].strip() in ("---", "***", "___"):
+            lines.pop(0)
+        else:
+            lines.pop(0)
+            break
+    while lines and lines[-1].strip() in ("", "---", "***", "___"):
+        if lines[-1].strip() in ("---", "***", "___"):
+            lines.pop()
+        else:
+            lines.pop()
+            break
+    return "\n".join(lines)
+
+
 def save_report_to_disk(final_state, ticker: str, save_path: Path):
     """Save complete analysis report to disk with organized subfolders."""
     save_path.mkdir(parents=True, exist_ok=True)
@@ -1248,22 +1307,22 @@ def save_report_to_disk(final_state, ticker: str, save_path: Path):
     analyst_parts = []
     if final_state.get("market_report"):
         analysts_dir.mkdir(exist_ok=True)
-        market_text = _strip_preamble(final_state["market_report"])
+        market_text = _strip_outer_hrules(_strip_preamble(final_state["market_report"]))
         (analysts_dir / "market.md").write_text(market_text, encoding="utf-8")
         analyst_parts.append(("Market Analyst", market_text))
     if final_state.get("sentiment_report"):
         analysts_dir.mkdir(exist_ok=True)
-        sentiment_text = _strip_preamble(final_state["sentiment_report"])
+        sentiment_text = _strip_outer_hrules(_strip_preamble(final_state["sentiment_report"]))
         (analysts_dir / "sentiment.md").write_text(sentiment_text, encoding="utf-8")
         analyst_parts.append(("Sentiment Analyst", sentiment_text))
     if final_state.get("news_report"):
         analysts_dir.mkdir(exist_ok=True)
-        news_text = _strip_preamble(final_state["news_report"])
+        news_text = _strip_outer_hrules(_strip_preamble(final_state["news_report"]))
         (analysts_dir / "news.md").write_text(news_text, encoding="utf-8")
         analyst_parts.append(("News Analyst", news_text))
     if final_state.get("fundamentals_report"):
         analysts_dir.mkdir(exist_ok=True)
-        fundamentals_text = _strip_preamble(final_state["fundamentals_report"])
+        fundamentals_text = _strip_outer_hrules(_strip_preamble(final_state["fundamentals_report"]))
         (analysts_dir / "fundamentals.md").write_text(fundamentals_text, encoding="utf-8")
         analyst_parts.append(("Fundamentals Analyst", fundamentals_text))
     if analyst_parts:
