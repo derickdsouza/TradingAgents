@@ -68,6 +68,11 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # dense analyst reports mid-table. Mapped to the provider's native
     # parameter (Google uses max_output_tokens; the rest use max_tokens).
     "max_tokens": 16384,
+    # PDF rendering engine for analyst reports. weasyprint supports modern
+    # CSS3 (page rules, gradients, page-break control) and uses system
+    # fonts via fontconfig+pango. xhtml2pdf is the legacy pure-Python
+    # fallback that needs no system deps. Override with $TRADINGAGENTS_PDF_ENGINE.
+    "pdf_engine": os.getenv("TRADINGAGENTS_PDF_ENGINE", "weasyprint"),
     # Checkpoint/resume: when True, LangGraph saves state after each node
     # so a crashed run can resume from the last successful step.
     "checkpoint_enabled": False,

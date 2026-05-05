@@ -881,20 +881,92 @@ def _replace_emoji_with_img(html: str) -> str:
     return _VARIATION_SELECTOR_RE.sub("", _EMOJI_RE.sub(sub, html))
 
 
+def _xhtml2pdf_styling(body_html: str) -> tuple[str, str]:
+    """Build the (html_doc, body_html) pair tuned for xhtml2pdf's CSS 2.1 subset.
+
+    Includes the ₹-glyph @font-face workaround and emoji-as-img substitution
+    that xhtml2pdf needs but WeasyPrint does not.
+    """
+    body_html = _replace_emoji_with_img(body_html)
+    font_path = _find_unicode_font_path()
+    if font_path:
+        # xhtml2pdf reads @font-face url() as a filesystem path. It chokes on
+        # spaces and on file:// URIs, so we copy the TTF to a temp file with
+        # a safe name and reference it as an absolute path.
+        import shutil, tempfile
+        safe_dir = Path(tempfile.gettempdir()) / "tradingagents_fonts"
+        safe_dir.mkdir(exist_ok=True)
+        safe_font = safe_dir / "ReportUnicode.ttf"
+        if not safe_font.exists():
+            shutil.copy(font_path, safe_font)
+        ref = str(safe_font.resolve())
+        font_face_css = (
+            f"@font-face {{ font-family: ReportUnicode; src: url({ref}); }}"
+            f"@font-face {{ font-family: ReportUnicode; font-weight: bold; src: url({ref}); }}"
+            f"@font-face {{ font-family: ReportUnicode; font-style: italic; src: url({ref}); }}"
+            f"@font-face {{ font-family: ReportUnicode; font-weight: bold; font-style: italic; src: url({ref}); }}"
+        )
+        body_font = "ReportUnicode, Helvetica, Arial, sans-serif"
+        mono_font = "ReportUnicode, 'Menlo', 'Courier New', monospace"
+    else:
+        font_face_css = ""
+        body_font = "Helvetica, Arial, sans-serif"
+        mono_font = "'Menlo', 'Courier New', monospace"
+    style = (
+        font_face_css +
+        f"body {{ font-family: {body_font}; font-size: 10pt; line-height: 1.4; }}"
+        "h1 { font-size: 18pt; } h2 { font-size: 14pt; margin-top: 18pt; }"
+        "h3 { font-size: 12pt; } h4 { font-size: 11pt; }"
+        "table { border-collapse: collapse; margin: 6pt 0; }"
+        "th, td { border: 1px solid #999; padding: 4pt 6pt; }"
+        f"code, pre {{ font-family: {mono_font}; font-size: 9pt; }}"
+        "pre { background: #f4f4f4; padding: 6pt; }"
+    )
+    html_doc = (
+        f"<html><head><meta charset='utf-8'><style>{style}</style></head>"
+        f"<body>{body_html}</body></html>"
+    )
+    return html_doc, body_html
+
+
+def _weasyprint_styling(body_html: str) -> str:
+    """Build the html_doc tuned for WeasyPrint.
+
+    WeasyPrint reads system fonts via fontconfig+pango, so the manual
+    @font-face workaround xhtml2pdf needs is unnecessary. Emoji also resolve
+    through system fonts, so the Twemoji <img> substitution is skipped.
+    The CSS rules here are the same shape xhtml2pdf gets — section bands,
+    callouts, footers etc. land in a follow-up that designs a real stylesheet.
+    """
+    style = (
+        "body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 10pt; line-height: 1.4; }"
+        "h1 { font-size: 18pt; } h2 { font-size: 14pt; margin-top: 18pt; }"
+        "h3 { font-size: 12pt; } h4 { font-size: 11pt; }"
+        "table { border-collapse: collapse; margin: 6pt 0; }"
+        "th, td { border: 1px solid #999; padding: 4pt 6pt; }"
+        "code, pre { font-family: 'Menlo', 'Courier New', monospace; font-size: 9pt; }"
+        "pre { background: #f4f4f4; padding: 6pt; }"
+    )
+    return (
+        f"<html><head><meta charset='utf-8'><style>{style}</style></head>"
+        f"<body>{body_html}</body></html>"
+    )
+
+
 def _markdown_to_pdf(md_path: Path) -> Optional[Path]:
     """Render a markdown report to a sibling PDF. Returns the PDF path or None on failure.
 
-    Optional dependency: ``pip install markdown xhtml2pdf``. Missing/broken deps
-    are reported once and the caller falls back to opening the markdown.
+    Engine is chosen by ``DEFAULT_CONFIG['pdf_engine']`` (overridable via
+    $TRADINGAGENTS_PDF_ENGINE). ``weasyprint`` is the modern default; it
+    supports CSS3, @page rules, system fonts, and OpenType features.
+    ``xhtml2pdf`` is the legacy pure-Python fallback for environments
+    without Pango/Cairo. If the configured engine's deps are missing the
+    other engine is tried before giving up.
     """
     try:
         import markdown as md_lib
-        from xhtml2pdf import pisa
     except ImportError:
-        console.print(
-            "[yellow]PDF generation skipped — install with: "
-            "pip install markdown xhtml2pdf[/yellow]"
-        )
+        console.print("[yellow]PDF generation skipped — install with: pip install markdown[/yellow]")
         return None
 
     pdf_path = md_path.with_suffix(".pdf")
@@ -903,56 +975,40 @@ def _markdown_to_pdf(md_path: Path) -> Optional[Path]:
             md_path.read_text(encoding="utf-8"),
             extensions=["tables", "fenced_code", "sane_lists"],
         )
-        body_html = _replace_emoji_with_img(body_html)
-        # xhtml2pdf only embeds fonts declared via @font-face in CSS — registering
-        # them with reportlab alone is not enough. We declare all four weight/style
-        # variants so bold/italic cells (e.g. table headers) don't fall back to
-        # Helvetica and lose glyphs like ₹.
-        font_path = _find_unicode_font_path()
-        if font_path:
-            # xhtml2pdf reads @font-face url() as a filesystem path. It chokes on
-            # spaces and on file:// URIs, so we copy the TTF to a temp file with
-            # a safe name and reference it as an absolute path.
-            import shutil, tempfile
-            safe_dir = Path(tempfile.gettempdir()) / "tradingagents_fonts"
-            safe_dir.mkdir(exist_ok=True)
-            safe_font = safe_dir / "ReportUnicode.ttf"
-            if not safe_font.exists():
-                shutil.copy(font_path, safe_font)
-            ref = str(safe_font.resolve())
-            font_face_css = (
-                f"@font-face {{ font-family: ReportUnicode; src: url({ref}); }}"
-                f"@font-face {{ font-family: ReportUnicode; font-weight: bold; src: url({ref}); }}"
-                f"@font-face {{ font-family: ReportUnicode; font-style: italic; src: url({ref}); }}"
-                f"@font-face {{ font-family: ReportUnicode; font-weight: bold; font-style: italic; src: url({ref}); }}"
-            )
-            body_font = "ReportUnicode, Helvetica, Arial, sans-serif"
-            mono_font = "ReportUnicode, 'Menlo', 'Courier New', monospace"
-        else:
-            font_face_css = ""
-            body_font = "Helvetica, Arial, sans-serif"
-            mono_font = "'Menlo', 'Courier New', monospace"
-        html_doc = (
-            "<html><head><meta charset='utf-8'><style>"
-            + font_face_css +
-            f"body {{ font-family: {body_font}; font-size: 10pt; line-height: 1.4; }}"
-            "h1 { font-size: 18pt; } h2 { font-size: 14pt; margin-top: 18pt; }"
-            "h3 { font-size: 12pt; } h4 { font-size: 11pt; }"
-            "table { border-collapse: collapse; margin: 6pt 0; }"
-            "th, td { border: 1px solid #999; padding: 4pt 6pt; }"
-            f"code, pre {{ font-family: {mono_font}; font-size: 9pt; }}"
-            "pre { background: #f4f4f4; padding: 6pt; }"
-            "</style></head><body>" + body_html + "</body></html>"
-        )
-        with open(pdf_path, "wb") as f:
-            result = pisa.CreatePDF(html_doc, dest=f)
-        if result.err:
-            console.print("[yellow]PDF generation reported errors; using MD instead.[/yellow]")
-            return None
-        return pdf_path
     except Exception as e:
-        console.print(f"[yellow]PDF generation failed: {e}[/yellow]")
+        console.print(f"[yellow]Markdown→HTML conversion failed: {e}[/yellow]")
         return None
+
+    engine = DEFAULT_CONFIG.get("pdf_engine", "weasyprint")
+    order = ("weasyprint", "xhtml2pdf") if engine == "weasyprint" else ("xhtml2pdf", "weasyprint")
+    for candidate in order:
+        try:
+            if candidate == "weasyprint":
+                html_doc = _weasyprint_styling(body_html)
+                from weasyprint import HTML  # type: ignore[import-not-found]
+                HTML(string=html_doc, base_url=str(md_path.parent)).write_pdf(pdf_path)
+                return pdf_path
+            else:
+                html_doc, _ = _xhtml2pdf_styling(body_html)
+                from xhtml2pdf import pisa  # type: ignore[import-not-found]
+                with open(pdf_path, "wb") as f:
+                    result = pisa.CreatePDF(html_doc, dest=f)
+                if result.err:
+                    console.print("[yellow]xhtml2pdf reported errors; trying next engine[/yellow]")
+                    continue
+                return pdf_path
+        except ImportError:
+            continue
+        except Exception as e:
+            console.print(f"[yellow]{candidate} render failed ({e}); trying next engine[/yellow]")
+            continue
+
+    console.print(
+        "[yellow]No PDF engine available — install with: "
+        "pip install weasyprint  (preferred; needs `brew install pango`)  OR  "
+        "pip install xhtml2pdf  (no system deps)[/yellow]"
+    )
+    return None
 
 
 def _open_in_default_viewer(path: Path) -> None:
