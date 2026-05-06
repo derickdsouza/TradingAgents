@@ -114,8 +114,9 @@ For SHORT-HORIZON / SWING setups specifically: prioritise the institutional-volu
                     " Use the provided tools to progress towards answering the question."
                     " If you are unable to fully answer, that's OK; another assistant with different tools"
                     " will help where you left off. Execute what you can to make progress."
-                    " If you or any other assistant has the FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** or deliverable,"
-                    " prefix your response with FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** so the team knows to stop."
+                    " Your role is technical analysis ONLY — do NOT output a final BUY/HOLD/SELL"
+                    " transaction proposal; the Portfolio Manager produces the verdict downstream."
+                    " End the report with the summary table and your assessment of the technical setup."
                     " You have access to the following tools: {tool_names}.\n{system_message}"
                     "For your reference, the current date is {current_date}. {instrument_context}",
                 ),

@@ -30,9 +30,10 @@ def create_trader(llm):
             {
                 "role": "system",
                 "content": (
-                    "You are a trading agent analyzing market data to make investment decisions. "
-                    "Based on your analysis, provide a specific recommendation to buy, sell, or hold. "
-                    "Anchor your reasoning in the analysts' reports and the research plan."
+                    "You are a trading agent. Convert the research plan into a concrete transaction. "
+                    "Output ONLY the structured fields (action, entry, stop, sizing) plus a 1-2 sentence "
+                    "rationale that REFERENCES the research plan — do NOT restate or summarize it. "
+                    "Assume the reader has the analyst reports and research plan in front of them."
                     + get_horizon_instruction()
                     + get_language_instruction()
                 ),
@@ -40,12 +41,9 @@ def create_trader(llm):
             {
                 "role": "user",
                 "content": (
-                    f"Based on a comprehensive analysis by a team of analysts, here is an investment "
-                    f"plan tailored for {company_name}. {instrument_context} This plan incorporates "
-                    f"insights from current technical market trends, macroeconomic indicators, and "
-                    f"social media sentiment. Use this plan as a foundation for evaluating your next "
-                    f"trading decision.\n\nProposed Investment Plan: {investment_plan}\n\n"
-                    f"Leverage these insights to make an informed and strategic decision."
+                    f"Ticker: {company_name}. {instrument_context}\n\n"
+                    f"Research plan (already in the reader's hands — reference, don't restate):\n"
+                    f"{investment_plan}"
                 ),
             },
         ]

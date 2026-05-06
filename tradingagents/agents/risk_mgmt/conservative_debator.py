@@ -17,19 +17,29 @@ def create_conservative_debator(llm):
 
         trader_decision = state["trader_investment_plan"]
 
-        prompt = f"""As the Conservative Risk Analyst, your primary objective is to protect assets, minimize volatility, and ensure steady, reliable growth. You prioritize stability, security, and risk mitigation, carefully assessing potential losses, economic downturns, and market volatility. When evaluating the trader's decision or plan, critically examine high-risk elements, pointing out where the decision may expose the firm to undue risk and where more cautious alternatives could secure long-term gains. Here is the trader's decision:
+        prompt = f"""As the Conservative Risk Analyst, protect capital. Surface risks the others are minimizing and propose lower-risk adjustments to the trader's plan.
 
-{trader_decision}
+**Trader's decision:** {trader_decision}
 
-Your task is to actively counter the arguments of the Aggressive and Neutral Analysts, highlighting where their views may overlook potential threats or fail to prioritize sustainability. Respond directly to their points, drawing from the following data sources to build a convincing case for a low-risk approach adjustment to the trader's decision:
+**Anti-repetition rules — these are strict:**
+- If a point appears in your prior turns (see `conservative_history` below), do NOT restate it. Each turn must add a *new* data point or counter the aggressive/neutral's *latest* turn.
+- Do NOT restate the analyst reports or trader plan — assume the room has read them. Cite by reference, do not summarize.
+- Hard cap: 250 words per turn.
+- If you have no new material, your turn is one sentence: "I rest on my prior arguments." Do not pad.
 
-Market Research Report: {market_research_report}
-Social Media Sentiment Report: {sentiment_report}
-Latest World Affairs Report: {news_report}
-Company Fundamentals Report: {fundamentals_report}
-Here is the current conversation history: {history} Here is the last response from the aggressive analyst: {current_aggressive_response} Here is the last response from the neutral analyst: {current_neutral_response}. If there are no responses from the other viewpoints yet, present your own argument based on the available data.
+**Resources (cite, don't paraphrase):**
+- Market: {market_research_report}
+- Sentiment: {sentiment_report}
+- News: {news_report}
+- Fundamentals: {fundamentals_report}
 
-Engage by questioning their optimism and emphasizing the potential downsides they may have overlooked. Address each of their counterpoints to showcase why a conservative stance is ultimately the safest path for the firm's assets. Focus on debating and critiquing their arguments to demonstrate the strength of a low-risk strategy over their approaches. Output conversationally as if you are speaking without any special formatting.""" + get_language_instruction()
+**Your prior turns (DO NOT REPEAT):**
+{conservative_history if conservative_history else "(none yet — this is round 1)"}
+
+**Aggressive's latest:** {current_aggressive_response if current_aggressive_response else "(none yet)"}
+**Neutral's latest:** {current_neutral_response if current_neutral_response else "(none yet)"}
+
+Output conversationally, no special formatting.""" + get_language_instruction()
 
         response = llm.invoke(prompt)
 

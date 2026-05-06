@@ -47,7 +47,7 @@ DEFAULTS = {
     "deep_model": "glm-5.1",
     "horizon": "swing",
 }
-DEPTH_MAP = {"shallow": 1, "medium": 3, "deep": 5}
+DEPTH_MAP = {"shallow": 1, "medium": 2, "deep": 3}
 HORIZON_CHOICES = ("swing", "position", "long-term")
 
 # Named bundles of flag values. `--profile <name>` applies these in one shot;
@@ -510,7 +510,7 @@ def get_user_selections(overrides: dict | None = None, interactive: bool = True)
 
     # Run config summary (only when caller passed overrides — i.e. non-interactive)
     if not interactive and overrides:
-        depth_label = {1: "shallow", 3: "medium", 5: "deep"}.get(
+        depth_label = {1: "shallow", 2: "medium", 3: "deep"}.get(
             overrides.get("research_depth"), str(overrides.get("research_depth", "?"))
         )
         analysts_val = overrides.get("analysts", [])
@@ -1329,26 +1329,28 @@ def save_report_to_disk(final_state, ticker: str, save_path: Path):
         content = "\n\n".join(f"### {name}\n{text}" for name, text in analyst_parts)
         sections.append(f"## I. Analyst Team Reports\n\n{content}")
 
-    # 2. Research
+    # 2. Research — full transcripts go to subdir; consolidated report shows
+    # only the Research Manager's synthesis + a pointer to the transcripts.
+    # The raw debate is faithfully preserved in 2_research/transcripts/ but
+    # not duplicated into the headline report (the manager already absorbed it).
     if final_state.get("investment_debate_state"):
         research_dir = save_path / "2_research"
+        transcripts_dir = research_dir / "transcripts"
         debate = final_state["investment_debate_state"]
-        research_parts = []
         if debate.get("bull_history"):
-            research_dir.mkdir(exist_ok=True)
-            (research_dir / "bull.md").write_text(debate["bull_history"], encoding="utf-8")
-            research_parts.append(("Bull Researcher", debate["bull_history"]))
+            transcripts_dir.mkdir(parents=True, exist_ok=True)
+            (transcripts_dir / "bull.md").write_text(debate["bull_history"], encoding="utf-8")
         if debate.get("bear_history"):
-            research_dir.mkdir(exist_ok=True)
-            (research_dir / "bear.md").write_text(debate["bear_history"], encoding="utf-8")
-            research_parts.append(("Bear Researcher", debate["bear_history"]))
+            transcripts_dir.mkdir(parents=True, exist_ok=True)
+            (transcripts_dir / "bear.md").write_text(debate["bear_history"], encoding="utf-8")
         if debate.get("judge_decision"):
             research_dir.mkdir(exist_ok=True)
             (research_dir / "manager.md").write_text(debate["judge_decision"], encoding="utf-8")
-            research_parts.append(("Research Manager", debate["judge_decision"]))
-        if research_parts:
-            content = "\n\n".join(f"### {name}\n{text}" for name, text in research_parts)
-            sections.append(f"## II. Research Team Decision\n\n{content}")
+            sections.append(
+                f"## II. Research Team Decision\n\n"
+                f"### Research Manager\n{debate['judge_decision']}\n\n"
+                f"_Full bull/bear debate transcripts: `2_research/transcripts/`._"
+            )
 
     # 3. Trading
     if final_state.get("trader_investment_plan"):
@@ -1357,26 +1359,36 @@ def save_report_to_disk(final_state, ticker: str, save_path: Path):
         (trading_dir / "trader.md").write_text(final_state["trader_investment_plan"], encoding="utf-8")
         sections.append(f"## III. Trading Team Plan\n\n### Trader\n{final_state['trader_investment_plan']}")
 
-    # 4. Risk Management
+    # 4. Risk Management — full transcripts go to subdir; consolidated report
+    # shows only each debater's *final* turn (the most-developed argument
+    # under the novelty constraint in their prompts). Full multi-round
+    # transcripts remain in 4_risk/transcripts/ for forensic use.
     if final_state.get("risk_debate_state"):
         risk_dir = save_path / "4_risk"
+        risk_transcripts_dir = risk_dir / "transcripts"
         risk = final_state["risk_debate_state"]
         risk_parts = []
         if risk.get("aggressive_history"):
-            risk_dir.mkdir(exist_ok=True)
-            (risk_dir / "aggressive.md").write_text(risk["aggressive_history"], encoding="utf-8")
-            risk_parts.append(("Aggressive Analyst", risk["aggressive_history"]))
+            risk_transcripts_dir.mkdir(parents=True, exist_ok=True)
+            (risk_transcripts_dir / "aggressive.md").write_text(risk["aggressive_history"], encoding="utf-8")
+            final_turn = risk.get("current_aggressive_response") or risk["aggressive_history"]
+            risk_parts.append(("Aggressive Analyst (final position)", final_turn))
         if risk.get("conservative_history"):
-            risk_dir.mkdir(exist_ok=True)
-            (risk_dir / "conservative.md").write_text(risk["conservative_history"], encoding="utf-8")
-            risk_parts.append(("Conservative Analyst", risk["conservative_history"]))
+            risk_transcripts_dir.mkdir(parents=True, exist_ok=True)
+            (risk_transcripts_dir / "conservative.md").write_text(risk["conservative_history"], encoding="utf-8")
+            final_turn = risk.get("current_conservative_response") or risk["conservative_history"]
+            risk_parts.append(("Conservative Analyst (final position)", final_turn))
         if risk.get("neutral_history"):
-            risk_dir.mkdir(exist_ok=True)
-            (risk_dir / "neutral.md").write_text(risk["neutral_history"], encoding="utf-8")
-            risk_parts.append(("Neutral Analyst", risk["neutral_history"]))
+            risk_transcripts_dir.mkdir(parents=True, exist_ok=True)
+            (risk_transcripts_dir / "neutral.md").write_text(risk["neutral_history"], encoding="utf-8")
+            final_turn = risk.get("current_neutral_response") or risk["neutral_history"]
+            risk_parts.append(("Neutral Analyst (final position)", final_turn))
         if risk_parts:
             content = "\n\n".join(f"### {name}\n{text}" for name, text in risk_parts)
-            sections.append(f"## IV. Risk Management Team Decision\n\n{content}")
+            sections.append(
+                f"## IV. Risk Management Team Decision\n\n{content}\n\n"
+                f"_Full multi-round risk debate transcripts: `4_risk/transcripts/`._"
+            )
 
         # 5. Portfolio Manager
         if risk.get("judge_decision"):

@@ -13,23 +13,30 @@ def create_bull_researcher(llm):
         news_report = state["news_report"]
         fundamentals_report = state["fundamentals_report"]
 
-        prompt = f"""You are a Bull Analyst advocating for investing in the stock. Your task is to build a strong, evidence-based case emphasizing growth potential, competitive advantages, and positive market indicators. Leverage the provided research and data to address concerns and counter bearish arguments effectively.
+        prompt = f"""You are a Bull Analyst advocating for investing in the stock. Build a strong, evidence-based case emphasizing growth potential, competitive advantages, and positive market indicators.
 
-Key points to focus on:
-- Growth Potential: Highlight the company's market opportunities, revenue projections, and scalability.
-- Competitive Advantages: Emphasize factors like unique products, strong branding, or dominant market positioning.
-- Positive Indicators: Use financial health, industry trends, and recent positive news as evidence.
-- Bear Counterpoints: Critically analyze the bear argument with specific data and sound reasoning, addressing concerns thoroughly and showing why the bull perspective holds stronger merit.
-- Engagement: Present your argument in a conversational style, engaging directly with the bear analyst's points and debating effectively rather than just listing data.
+Focus on: growth potential, competitive advantages, financial health, industry tailwinds, and a direct rebuttal of the bear's most recent point. Be conversational, not a bulleted list of facts.
 
-Resources available:
-Market research report: {market_research_report}
-Social media sentiment report: {sentiment_report}
-Latest world affairs news: {news_report}
-Company fundamentals report: {fundamentals_report}
-Conversation history of the debate: {history}
-Last bear argument: {current_response}
-Use this information to deliver a compelling bull argument, refute the bear's concerns, and engage in a dynamic debate that demonstrates the strengths of the bull position.
+**Anti-repetition rules — these are strict:**
+- If a point appears in your prior turns (see `bull_history` below), do NOT restate it. Each turn must add a *new* data point or a specific counter to the bear's *latest* turn.
+- Do NOT restate the analyst reports' findings — assume the reader has them. Reference them by name (e.g. "as the fundamentals report shows") and move on.
+- Hard cap: 250 words per turn. Concise rebuttal beats long monologue.
+- If you have no new material left, your turn is one sentence: "I rest on my prior arguments." Do not pad.
+
+**Resources (do not paraphrase — cite when needed):**
+- Market research report: {market_research_report}
+- Social media sentiment report: {sentiment_report}
+- Latest world affairs news: {news_report}
+- Company fundamentals report: {fundamentals_report}
+
+**Your prior turns (DO NOT REPEAT THESE):**
+{bull_history if bull_history else "(none yet — this is round 1)"}
+
+**Full debate so far:**
+{history}
+
+**Bear's most recent argument (rebut this specifically):**
+{current_response}
 """ + get_language_instruction()
 
         response = llm.invoke(prompt)
