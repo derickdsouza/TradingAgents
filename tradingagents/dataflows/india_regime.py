@@ -50,7 +50,17 @@ def _cap_tier(market_cap_inr: Optional[float]) -> tuple[str, Optional[str], Opti
         return (f"Large Cap (mcap INR {cr:,.0f} Cr)", "^CNX100", "Nifty 100")
     if cr >= _MID_CAP_MIN_CR:
         return (f"Mid Cap (mcap INR {cr:,.0f} Cr)", "^NSEMDCP50", "Nifty Midcap 50")
-    return (f"Small Cap (mcap INR {cr:,.0f} Cr)", "^CNXSC", "Nifty Smallcap 100")
+    # The plain Nifty Smallcap 100 / 250 index symbols (^CNXSC, ^CRSSMA,
+    # NIFTY_SMLCAP_100.NS) all return zero rows from yfinance — the Indian
+    # smallcap indices are not surfaced via yfinance the way Nifty 50 / 500
+    # are. The Motilal Oswal Nifty Smallcap 250 ETF (MOSMALL250.NS) tracks
+    # the index closely and IS available with full history, so it is the
+    # working proxy. The label is updated to be honest about that.
+    return (
+        f"Small Cap (mcap INR {cr:,.0f} Cr)",
+        "MOSMALL250.NS",
+        "Nifty Smallcap 250 (via Motilal Oswal ETF)",
+    )
 
 
 # yfinance sector + industry → NSE sectoral index. The sector field is
