@@ -1328,9 +1328,14 @@ def _build_trade_setup_block(
 
     entry_price = _grab(trader_plan, "Entry Price")
     if not entry_price and key_levels:
-        m = re.search(r"Latest close:\s*([0-9][0-9.,]*)", key_levels)
+        # Trader did not specify an anchor level. The latest close is the
+        # *current* price (where you'd buy at market), not an anchor for
+        # the recommendation — Hold/Sell anchors should be a prior level.
+        # Fall back to the 50-DMA from key_levels: it's the canonical
+        # "swing entry" anchor and almost always a meaningful prior level.
+        m = re.search(r"50-DMA:\s*([0-9][0-9.,]*)", key_levels)
         if m:
-            entry_price = f"{m.group(1).strip()} _(reference: latest close — Hold/Sell has no buy entry)_"
+            entry_price = f"{m.group(1).strip()} _(reference: 50-DMA fallback — Trader did not specify an anchor level)_"
 
     fields = [
         ("Action", _grab(trader_plan, "Action")),

@@ -42,10 +42,17 @@ def create_trader(llm):
                     "Anchor your entry/stop/target in the Key Price Levels block when one is supplied "
                     "— those are the deterministic levels and override any conflicting numbers in the "
                     "research plan. "
-                    "ALWAYS populate `entry_price`. For Buy, it is the planned entry. For Hold or Sell, "
-                    "it is the current/reference price the verdict is being delivered at — use the "
-                    "Latest close from the Key Price Levels block. Never leave `entry_price` blank; the "
-                    "report header surfaces it as the anchor for the recommendation."
+                    "ALWAYS populate `entry_price` with the deterministic price level at which a long "
+                    "position is or would be ANCHORED — typically the most recent consolidation low, "
+                    "a key moving-average cluster (50/200-DMA), or a pivot/AVWAP level visible in the "
+                    "Key Price Levels block. NEVER use the latest close as a placeholder: latest close "
+                    "is the *current* price, not the *entry* level the recommendation is anchored to. "
+                    "For Buy, this is the planned entry. For Hold, it is the prior accumulation level "
+                    "or pullback zone the position is anchored to / would re-enter at. For Sell, it is "
+                    "the prior anchor level used as the cost reference for the exit. The report header "
+                    "surfaces this number as the trade's anchor, so picking the latest close makes the "
+                    "report look like the recommendation is to buy now at market — which is wrong on "
+                    "Hold/Sell. Never leave `entry_price` blank."
                     + get_horizon_instruction()
                     + get_language_instruction()
                 ),
