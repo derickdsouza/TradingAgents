@@ -106,11 +106,26 @@ def get_analyst_horizon_instruction() -> str:
 
 def build_instrument_context(ticker: str) -> str:
     """Describe the exact instrument so agents preserve exchange-qualified tickers."""
-    return (
+    from tradingagents.dataflows.nse_client import is_indian_ticker
+
+    base = (
         f"The instrument to analyze is `{ticker}`. "
         "Use this exact ticker in every tool call, report, and recommendation, "
         "preserving any exchange suffix (e.g. `.TO`, `.L`, `.HK`, `.T`)."
     )
+    if is_indian_ticker(ticker):
+        base += (
+            " This is an Indian (NSE/BSE) listing — quote all company-level "
+            "financial figures (revenue, profit, balance-sheet items, dividends, "
+            "capex, market cap, share price, EPS, book value) in INR using crore (Cr) "
+            "or lakh as the unit, matching how Indian filings and Indian financial "
+            "media report them. Use USD/millions only for genuinely international "
+            "figures: Brent crude, US gasoline, foreign exchange rates (INR/USD), "
+            "foreign-listed peer comparables, and similar non-INR data. When a "
+            "dual-quote is genuinely useful (e.g. market cap), put INR first and "
+            "USD as a secondary parenthetical."
+        )
+    return base
 
 def create_msg_delete():
     def delete_messages(state):
