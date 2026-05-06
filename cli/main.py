@@ -1247,6 +1247,37 @@ _PREAMBLE_OPENERS = (
     "excellent", "great", "perfect", "sure", "of course", "got it",
     "here is", "here's", "here is the", "all data",
     "i'll", "i will", "let me", "alright", "okay",
+    "it appears", "it looks", "it seems", "since ", "based on",
+    "unfortunately", "apologies", "apology", "now that", "after ",
+    "given ", "without ", "while ", "i have ", "i've ", "i was ",
+    "the tool", "tool ",
+)
+
+# Strong meta-narration signals. If any of these phrases appears ANYWHERE in
+# the candidate head paragraph, treat it as preamble even if the opener
+# didn't match. These are phrases an analyst-quality report body would
+# never legitimately contain — so a hit is a high-confidence preamble flag.
+_PREAMBLE_SIGNALS = (
+    "let me compile",
+    "let me proceed",
+    "let me now",
+    "compile the report",
+    "compile the comprehensive report",
+    "compile the analysis",
+    "compile the final",
+    "i'll work with the data",
+    "i'll proceed with",
+    "not available as tools",
+    "are not available",
+    "is not available",
+    "in the current session",
+    "tools available in",
+    "with the data i've gathered",
+    "with the data gathered",
+    "now i have all",
+    "all the data needed",
+    "all data is now in hand",
+    "data is now in hand",
 )
 
 
@@ -1254,8 +1285,12 @@ def _strip_preamble(text: str) -> str:
     """Drop a conversational opening paragraph if present.
 
     The model occasionally prefaces analyst reports with chatty lines like
-    'Excellent. All data is now in hand. Here is the analysis...'. Detect such
-    a paragraph (before the first markdown heading) and remove it.
+    'Excellent. All data is now in hand. Here is the analysis...' or
+    'It appears that <tool> is not available as tools in the current
+    session. Let me compile the comprehensive report now.'. Strip such a
+    paragraph (the prefix before the first ``\\n\\n``) when either the
+    opener matches the known list OR the paragraph contains any of the
+    strong meta-narration signal phrases.
     """
     if not text:
         return text
@@ -1265,7 +1300,10 @@ def _strip_preamble(text: str) -> str:
     head, rest = parts[0].strip(), parts[1]
     if not head or head.startswith("#") or head.startswith("|"):
         return text
-    if any(head.lower().startswith(opener) for opener in _PREAMBLE_OPENERS):
+    head_lc = head.lower()
+    if any(head_lc.startswith(opener) for opener in _PREAMBLE_OPENERS):
+        return rest.lstrip()
+    if any(signal in head_lc for signal in _PREAMBLE_SIGNALS):
         return rest.lstrip()
     return text
 
