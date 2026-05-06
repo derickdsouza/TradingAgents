@@ -113,6 +113,15 @@ class TraderProposal(BaseModel):
     reports, then turns them into a concrete transaction: what action to
     take, the reasoning that justifies it, and the practical levels for
     entry, stop-loss, and sizing.
+
+    Stops are split into two distinct concepts that real traders manage
+    separately: ``stop_initial`` is the fixed line in the sand from entry
+    (technical or thesis-break), ``stop_trailing`` is the dynamic exit
+    once the trade is in profit (typically Chandelier Exit / AVWAP /
+    rising MA). Each price field has a paired ``_basis`` field naming
+    exactly what level it is anchored to, so the report can show
+    ``Initial Stop: 313 (just below 20-day low)`` rather than a bare
+    number that reads as either a technical or psychological stop.
     """
 
     action: TraderAction = Field(
@@ -126,11 +135,61 @@ class TraderProposal(BaseModel):
     )
     entry_price: Optional[float] = Field(
         default=None,
-        description="Optional entry price target in the instrument's quote currency.",
+        description=(
+            "Entry-anchor price in the instrument's quote currency. The "
+            "deterministic level the recommendation is anchored to — a recent "
+            "consolidation low, a moving-average cluster, a pivot, an AVWAP, "
+            "or a round psychological level. NEVER use the latest close as a "
+            "placeholder: latest close is the *current* price, not the *entry* "
+            "level."
+        ),
     )
-    stop_loss: Optional[float] = Field(
+    entry_basis: Optional[str] = Field(
         default=None,
-        description="Optional stop-loss price in the instrument's quote currency.",
+        description=(
+            "One-line label naming what `entry_price` is anchored to. Examples: "
+            "'50-DMA', '50-DMA/200-DMA cluster midpoint (psychological)', "
+            "'prior swing high', 'AVWAP from 52-week low', 'cup-and-handle "
+            "pivot'. ALWAYS populate when `entry_price` is set — the report "
+            "header surfaces it so the reader sees what the number means."
+        ),
+    )
+    stop_initial: Optional[float] = Field(
+        default=None,
+        description=(
+            "Initial stop-loss price — the FIXED level at which the trade "
+            "thesis is invalidated and the position is closed. The line in "
+            "the sand from entry. Either a technical level (just below 20-day "
+            "low / swing low / 200-DMA) or a thesis-break level (round number "
+            "representing fundamental deterioration)."
+        ),
+    )
+    stop_initial_basis: Optional[str] = Field(
+        default=None,
+        description=(
+            "One-line label naming what `stop_initial` is anchored to. "
+            "Examples: 'just below 20-day low', 'below 200-DMA buffer', "
+            "'thesis-break (fundamental, fixed)'. ALWAYS populate when "
+            "`stop_initial` is set."
+        ),
+    )
+    stop_trailing: Optional[float] = Field(
+        default=None,
+        description=(
+            "Optional dynamic trailing-stop price — moves up as the trade "
+            "moves in favour. Typically anchored to Chandelier Exit (ATR-"
+            "based), AVWAP-52wL, or a rising 50-DMA. DISTINCT from "
+            "`stop_initial`: trailing stops are dynamic; initial stops are "
+            "fixed. Many real swing setups carry both simultaneously."
+        ),
+    )
+    stop_trailing_basis: Optional[str] = Field(
+        default=None,
+        description=(
+            "One-line label naming what `stop_trailing` is anchored to. "
+            "Examples: 'Chandelier Exit (ATR, dynamic)', 'AVWAP-52wL', "
+            "'rising 50-DMA'. ALWAYS populate when `stop_trailing` is set."
+        ),
     )
     position_sizing: Optional[str] = Field(
         default=None,
@@ -141,19 +200,33 @@ class TraderProposal(BaseModel):
 def render_trader_proposal(proposal: TraderProposal) -> str:
     """Render a TraderProposal to markdown.
 
+    Each price field is rendered with its paired basis label inline as
+    ``**Label**: <value> — _<basis>_`` when the basis is present, so the
+    rendered prose carries the same information the structured schema
+    captured.
+
     The trailing ``FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL**`` line is
     preserved for backward compatibility with the analyst stop-signal text
     and any external code that greps for it.
     """
+
+    def _line(label: str, value, basis: Optional[str]) -> str:
+        line = f"**{label}**: {value}"
+        if basis:
+            line += f" — _{basis}_"
+        return line
+
     parts = [
         f"**Action**: {proposal.action.value}",
         "",
         f"**Reasoning**: {proposal.reasoning}",
     ]
     if proposal.entry_price is not None:
-        parts.extend(["", f"**Entry Price**: {proposal.entry_price}"])
-    if proposal.stop_loss is not None:
-        parts.extend(["", f"**Stop Loss**: {proposal.stop_loss}"])
+        parts.extend(["", _line("Entry Price", proposal.entry_price, proposal.entry_basis)])
+    if proposal.stop_initial is not None:
+        parts.extend(["", _line("Initial Stop", proposal.stop_initial, proposal.stop_initial_basis)])
+    if proposal.stop_trailing is not None:
+        parts.extend(["", _line("Trailing Stop", proposal.stop_trailing, proposal.stop_trailing_basis)])
     if proposal.position_sizing:
         parts.extend(["", f"**Position Sizing**: {proposal.position_sizing}"])
     parts.extend([

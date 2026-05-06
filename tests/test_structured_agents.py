@@ -44,21 +44,51 @@ class TestRenderTraderProposal:
             action=TraderAction.BUY,
             reasoning="Strong technicals + fundamentals.",
             entry_price=189.5,
-            stop_loss=178.0,
+            entry_basis="50-DMA cluster",
+            stop_initial=178.0,
+            stop_initial_basis="just below 20-day low",
             position_sizing="6% of portfolio",
         )
         md = render_trader_proposal(p)
         assert "**Action**: Buy" in md
-        assert "**Entry Price**: 189.5" in md
-        assert "**Stop Loss**: 178.0" in md
+        assert "**Entry Price**: 189.5 — _50-DMA cluster_" in md
+        assert "**Initial Stop**: 178.0 — _just below 20-day low_" in md
         assert "**Position Sizing**: 6% of portfolio" in md
         assert "FINAL TRANSACTION PROPOSAL: **BUY**" in md
+
+    def test_dual_stop_concept_renders(self):
+        p = TraderProposal(
+            action=TraderAction.BUY,
+            reasoning="VCP breakout in stage 2.",
+            entry_price=200.0,
+            entry_basis="cup-and-handle pivot",
+            stop_initial=185.0,
+            stop_initial_basis="just below 20-day low",
+            stop_trailing=192.0,
+            stop_trailing_basis="Chandelier Exit (ATR, dynamic)",
+        )
+        md = render_trader_proposal(p)
+        assert "**Initial Stop**: 185.0 — _just below 20-day low_" in md
+        assert "**Trailing Stop**: 192.0 — _Chandelier Exit (ATR, dynamic)_" in md
+
+    def test_basis_omitted_when_absent_keeps_value_only(self):
+        p = TraderProposal(
+            action=TraderAction.BUY,
+            reasoning="r",
+            entry_price=189.5,
+            stop_initial=178.0,
+        )
+        md = render_trader_proposal(p)
+        assert "**Entry Price**: 189.5\n" in md or md.endswith("**Entry Price**: 189.5")
+        assert "**Initial Stop**: 178.0" in md
+        assert "—" not in md.split("Entry Price")[1].split("\n")[0]
 
     def test_optional_fields_omitted_when_absent(self):
         p = TraderProposal(action=TraderAction.SELL, reasoning="Guidance cut.")
         md = render_trader_proposal(p)
         assert "Entry Price" not in md
-        assert "Stop Loss" not in md
+        assert "Initial Stop" not in md
+        assert "Trailing Stop" not in md
         assert "Position Sizing" not in md
         assert "FINAL TRANSACTION PROPOSAL: **SELL**" in md
 
@@ -125,7 +155,9 @@ class TestTraderAgent:
             action=TraderAction.BUY,
             reasoning="AI capex cycle intact; institutional flows constructive.",
             entry_price=189.5,
-            stop_loss=178.0,
+            entry_basis="50-DMA cluster",
+            stop_initial=178.0,
+            stop_initial_basis="just below 20-day low",
             position_sizing="6% of portfolio",
         )
         llm = _structured_trader_llm(captured, proposal)
@@ -133,7 +165,7 @@ class TestTraderAgent:
         result = trader(_make_trader_state())
         plan = result["trader_investment_plan"]
         assert "**Action**: Buy" in plan
-        assert "**Entry Price**: 189.5" in plan
+        assert "**Entry Price**: 189.5 — _50-DMA cluster_" in plan
         assert "FINAL TRANSACTION PROPOSAL: **BUY**" in plan
         # The same rendered markdown is also added to messages for downstream agents.
         assert plan in result["messages"][0].content
@@ -145,7 +177,7 @@ class TestTraderAgent:
         trader(_make_trader_state())
         # The investment plan is in the user message of the captured prompt.
         prompt = captured["prompt"]
-        assert any("Proposed Investment Plan" in m["content"] for m in prompt)
+        assert any("Research plan" in m["content"] for m in prompt)
 
     def test_falls_back_to_freetext_when_structured_unavailable(self):
         plain_response = (

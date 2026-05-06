@@ -1335,13 +1335,14 @@ def _build_trade_setup_block(
         # "swing entry" anchor and almost always a meaningful prior level.
         m = re.search(r"50-DMA:\s*([0-9][0-9.,]*)", key_levels)
         if m:
-            entry_price = f"{m.group(1).strip()} _(reference: 50-DMA fallback — Trader did not specify an anchor level)_"
+            entry_price = f"{m.group(1).strip()} — _50-DMA fallback (Trader did not specify an anchor level)_"
 
     fields = [
         ("Action", _grab(trader_plan, "Action")),
         ("Rating", _grab(pm_decision, "Rating")),
         ("Entry Price", entry_price),
-        ("Stop Loss", _grab(trader_plan, "Stop Loss")),
+        ("Initial Stop", _grab(trader_plan, "Initial Stop")),
+        ("Trailing Stop", _grab(trader_plan, "Trailing Stop")),
         ("Position Sizing", _grab(trader_plan, "Position Sizing")),
         ("Price Target", _grab(pm_decision, "Price Target")),
         ("Time Horizon", _grab(pm_decision, "Time Horizon")),
