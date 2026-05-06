@@ -211,26 +211,25 @@ def compute_market_regime(ticker: str, trade_date: str) -> str:
 
     lines = ["**Indian Market Regime (deterministic, fetched from yfinance):**"]
 
-    # Broad: Nifty 50 + Nifty 500
+    # Broad: Nifty 50 + Nifty 500. Broad-index lines drop silently if
+    # yfinance returns nothing — the section below is only useful if at
+    # least one broad index resolved.
     for sym, name in (("^NSEI", "Nifty 50"), ("^CRSLDX", "Nifty 500")):
         closes = _fetch_close_series(sym, end_dt)
         if closes is None:
-            lines.append(f"- Broad ({name}): n/a")
             continue
         lines.append(
             f"- Broad ({name}): {_fmt_level(closes[-1])} | "
             f"30d {_fmt_pct(_pct_30d(closes))} | trend: {_trend_tag(closes)}"
         )
 
-    # Cap tier
+    # Cap tier — only emit a line if the cap-tier index resolves AND its
+    # series fetches. Missing data is hidden, not surfaced as "fetch
+    # failed" placeholder noise.
     cap_label, cap_sym, cap_name = _cap_tier(market_cap)
-    if cap_sym is None:
-        lines.append(f"- Cap tier: {cap_label} (no NSE cap-tier index match)")
-    else:
+    if cap_sym is not None:
         cap_closes = _fetch_close_series(cap_sym, end_dt)
-        if cap_closes is None:
-            lines.append(f"- Cap tier — {cap_label} → {cap_name}: fetch failed")
-        else:
+        if cap_closes is not None:
             cap_30d = _pct_30d(cap_closes)
             lines.append(
                 f"- Cap tier — {cap_label} → {cap_name}: "
@@ -239,21 +238,14 @@ def compute_market_regime(ticker: str, trade_date: str) -> str:
                 f"(stock {_fmt_pct(stock_30d)} vs index {_fmt_pct(cap_30d)})"
             )
 
-    # Sector
-    if not sector:
-        lines.append("- Sector: yfinance returned no sector tag")
-    else:
+    # Sector — same rule: only emit a line if both the sector mapping
+    # resolves to an NSE symbol AND the series fetches.
+    if sector:
         sec_sym, sec_name = _resolve_sector_index(sector, industry)
         sector_label = f"{sector}{' / ' + industry if industry else ''}"
-        if sec_sym is None:
-            lines.append(
-                f"- Sector — {sector_label}: no NSE sectoral index match"
-            )
-        else:
+        if sec_sym is not None:
             sec_closes = _fetch_close_series(sec_sym, end_dt)
-            if sec_closes is None:
-                lines.append(f"- Sector — {sector_label} → {sec_name}: fetch failed")
-            else:
+            if sec_closes is not None:
                 sec_30d = _pct_30d(sec_closes)
                 lines.append(
                     f"- Sector — {sector_label} → {sec_name}: "
@@ -261,5 +253,10 @@ def compute_market_regime(ticker: str, trade_date: str) -> str:
                     f"stock RS: {_rs_tag(stock_30d, sec_30d)} "
                     f"(stock {_fmt_pct(stock_30d)} vs index {_fmt_pct(sec_30d)})"
                 )
+
+    # If only the header survived, suppress the whole block — there's
+    # nothing useful to surface.
+    if len(lines) == 1:
+        return ""
 
     return "\n".join(lines)
