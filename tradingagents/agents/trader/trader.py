@@ -26,8 +26,10 @@ def create_trader(llm):
         instrument_context = build_instrument_context(company_name)
         investment_plan = state["investment_plan"]
         key_levels = state.get("key_levels", "")
+        market_regime = state.get("market_regime", "")
 
         levels_block = f"\n\n{key_levels}" if key_levels else ""
+        regime_block = f"\n\n{market_regime}" if market_regime else ""
 
         messages = [
             {
@@ -51,7 +53,7 @@ def create_trader(llm):
             {
                 "role": "user",
                 "content": (
-                    f"Ticker: {company_name}. {instrument_context}{levels_block}\n\n"
+                    f"Ticker: {company_name}. {instrument_context}{levels_block}{regime_block}\n\n"
                     f"Research plan (already in the reader's hands — reference, don't restate):\n"
                     f"{investment_plan}"
                 ),

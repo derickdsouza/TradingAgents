@@ -1354,6 +1354,30 @@ def _build_trade_setup_block(
     )
 
 
+def _build_market_regime_block(market_regime: str | None) -> str | None:
+    """Render the deterministic market-regime block for the report header.
+
+    `market_regime` is the markdown produced by `compute_market_regime` —
+    already a bulleted list with broad (Nifty 50/500), cap-tier, and sector
+    lines. We wrap it under a top-level heading and add a one-line preface
+    so a reader landing on the report knows the broad market regime AND the
+    ticker-specific cap/sector regime before they hit the trade setup.
+
+    Empty / non-Indian → returns None so the section is skipped.
+    """
+    if not market_regime or not market_regime.strip():
+        return None
+    body = market_regime.strip()
+    if body.startswith("**") and "\n" in body:
+        body = body.split("\n", 1)[1].strip()
+    return (
+        "## Market Regime Context\n\n"
+        "_Broad market and ticker-specific regime at the time of analysis "
+        "(deterministic snapshot, not LLM-generated)._\n\n"
+        f"{body}"
+    )
+
+
 def save_report_to_disk(final_state, ticker: str, save_path: Path):
     """Save complete analysis report to disk with organized subfolders."""
     save_path.mkdir(parents=True, exist_ok=True)
@@ -1366,6 +1390,10 @@ def save_report_to_disk(final_state, ticker: str, save_path: Path):
     )
     if setup_block:
         sections.append(setup_block)
+
+    regime_block = _build_market_regime_block(final_state.get("market_regime"))
+    if regime_block:
+        sections.append(regime_block)
 
     # 1. Analysts (preamble stripped to drop any chatty model preamble)
     analysts_dir = save_path / "1_analysts"

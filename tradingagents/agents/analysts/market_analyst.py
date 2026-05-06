@@ -8,6 +8,7 @@ from tradingagents.agents.utils.agent_utils import (
 from tradingagents.agents.utils.market_levels import compute_key_levels
 from tradingagents.agents.utils.technical_indicators_tools import get_fno_oi
 from tradingagents.dataflows.config import get_config
+from tradingagents.dataflows.india_regime import compute_market_regime
 from tradingagents.dataflows.nse_client import is_indian_ticker
 
 
@@ -144,6 +145,7 @@ For SHORT-HORIZON / SWING setups specifically: prioritise the institutional-volu
             report = result.content
             update["market_report"] = report
             update["key_levels"] = compute_key_levels(ticker, current_date)
+            update["market_regime"] = compute_market_regime(ticker, current_date)
 
         return update
 

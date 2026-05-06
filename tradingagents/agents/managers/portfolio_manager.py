@@ -33,6 +33,7 @@ def create_portfolio_manager(llm):
         research_plan = state["investment_plan"]
         trader_plan = state["trader_investment_plan"]
         key_levels = state.get("key_levels", "")
+        market_regime = state.get("market_regime", "")
 
         past_context = state.get("past_context", "")
         lessons_line = (
@@ -41,10 +42,11 @@ def create_portfolio_manager(llm):
             else ""
         )
         levels_block = f"\n\n{key_levels}" if key_levels else ""
+        regime_block = f"\n\n{market_regime}" if market_regime else ""
 
         prompt = f"""As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.
 
-{instrument_context}{levels_block}
+{instrument_context}{levels_block}{regime_block}
 
 ---
 

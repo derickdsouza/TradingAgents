@@ -56,6 +56,13 @@ class AgentState(MessagesState):
         "computed by the market analyst node and threaded into RM/Trader/PM "
         "prompts that don't see the analyst reports directly.",
     ]
+    market_regime: Annotated[
+        str,
+        "Indian market regime context (Nifty 50/500 broad, cap-tier index, "
+        "sector index) with trend tags and stock RS — empty for non-Indian "
+        "tickers. Computed by the market analyst node and threaded into "
+        "RM/Trader/PM prompts.",
+    ]
     market_report: Annotated[str, "Report from the Market Analyst"]
     sentiment_report: Annotated[str, "Report from the Sentiment Analyst"]
     news_report: Annotated[
