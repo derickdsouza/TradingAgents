@@ -25,6 +25,9 @@ def create_trader(llm):
         company_name = state["company_of_interest"]
         instrument_context = build_instrument_context(company_name)
         investment_plan = state["investment_plan"]
+        key_levels = state.get("key_levels", "")
+
+        levels_block = f"\n\n{key_levels}" if key_levels else ""
 
         messages = [
             {
@@ -33,7 +36,10 @@ def create_trader(llm):
                     "You are a trading agent. Convert the research plan into a concrete transaction. "
                     "Output ONLY the structured fields (action, entry, stop, sizing) plus a 1-2 sentence "
                     "rationale that REFERENCES the research plan — do NOT restate or summarize it. "
-                    "Assume the reader has the analyst reports and research plan in front of them."
+                    "Assume the reader has the analyst reports and research plan in front of them. "
+                    "Anchor your entry/stop/target in the Key Price Levels block when one is supplied "
+                    "— those are the deterministic levels and override any conflicting numbers in the "
+                    "research plan."
                     + get_horizon_instruction()
                     + get_language_instruction()
                 ),
@@ -41,7 +47,7 @@ def create_trader(llm):
             {
                 "role": "user",
                 "content": (
-                    f"Ticker: {company_name}. {instrument_context}\n\n"
+                    f"Ticker: {company_name}. {instrument_context}{levels_block}\n\n"
                     f"Research plan (already in the reader's hands — reference, don't restate):\n"
                     f"{investment_plan}"
                 ),

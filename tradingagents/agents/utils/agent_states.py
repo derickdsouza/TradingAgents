@@ -50,6 +50,12 @@ class AgentState(MessagesState):
     sender: Annotated[str, "Agent that sent this message"]
 
     # research step
+    key_levels: Annotated[
+        str,
+        "Deterministic price anchors (close, 50/200-DMA, 52w/20d ranges) "
+        "computed by the market analyst node and threaded into RM/Trader/PM "
+        "prompts that don't see the analyst reports directly.",
+    ]
     market_report: Annotated[str, "Report from the Market Analyst"]
     sentiment_report: Annotated[str, "Report from the Sentiment Analyst"]
     news_report: Annotated[

@@ -20,12 +20,15 @@ def create_research_manager(llm):
     def research_manager_node(state) -> dict:
         instrument_context = build_instrument_context(state["company_of_interest"])
         history = state["investment_debate_state"].get("history", "")
+        key_levels = state.get("key_levels", "")
 
         investment_debate_state = state["investment_debate_state"]
 
+        levels_block = f"\n\n{key_levels}" if key_levels else ""
+
         prompt = f"""As the Research Manager and debate facilitator, your role is to critically evaluate this round of debate and deliver a clear, actionable investment plan for the trader.
 
-{instrument_context}
+{instrument_context}{levels_block}
 
 ---
 

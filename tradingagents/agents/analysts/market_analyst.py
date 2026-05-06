@@ -5,6 +5,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_language_instruction,
     get_stock_data,
 )
+from tradingagents.agents.utils.market_levels import compute_key_levels
 from tradingagents.agents.utils.technical_indicators_tools import get_fno_oi
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.nse_client import is_indian_ticker
@@ -134,13 +135,16 @@ For SHORT-HORIZON / SWING setups specifically: prioritise the institutional-volu
         result = chain.invoke(state["messages"])
 
         report = ""
-
-        if len(result.tool_calls) == 0:
-            report = result.content
-
-        return {
+        update = {
             "messages": [result],
             "market_report": report,
         }
+
+        if len(result.tool_calls) == 0:
+            report = result.content
+            update["market_report"] = report
+            update["key_levels"] = compute_key_levels(ticker, current_date)
+
+        return update
 
     return market_analyst_node
