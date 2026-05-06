@@ -39,7 +39,11 @@ def create_trader(llm):
                     "Assume the reader has the analyst reports and research plan in front of them. "
                     "Anchor your entry/stop/target in the Key Price Levels block when one is supplied "
                     "— those are the deterministic levels and override any conflicting numbers in the "
-                    "research plan."
+                    "research plan. "
+                    "ALWAYS populate `entry_price`. For Buy, it is the planned entry. For Hold or Sell, "
+                    "it is the current/reference price the verdict is being delivered at — use the "
+                    "Latest close from the Key Price Levels block. Never leave `entry_price` blank; the "
+                    "report header surfaces it as the anchor for the recommendation."
                     + get_horizon_instruction()
                     + get_language_instruction()
                 ),

@@ -1297,14 +1297,26 @@ def _strip_outer_hrules(text: str) -> str:
     return "\n".join(lines)
 
 
-def _build_trade_setup_block(trader_plan: str | None, pm_decision: str | None) -> str | None:
+def _build_trade_setup_block(
+    trader_plan: str | None,
+    pm_decision: str | None,
+    key_levels: str | None = None,
+) -> str | None:
     """Extract the headline trade-setup numbers and render them as a top-of-report block.
 
     Parses the rendered markdown produced by `render_trader_proposal` (Action,
     Entry Price, Stop Loss, Position Sizing) and `render_pm_decision` (Rating,
     Price Target, Time Horizon). The reader sees the assumed entry and stop
-    immediately, before scrolling. Returns None if neither side yields any
-    fields (e.g. a free-text fallback that didn't preserve the schema shape).
+    immediately, before scrolling.
+
+    When the Trader leaves Entry Price blank — typical on Hold/Sell, where
+    "where to buy" doesn't apply — we surface the latest close from
+    `key_levels` as a "Reference Price (current close)" so the reader still
+    sees the price at which the Hold/Sell verdict is being delivered. Without
+    this, a Hold report has no anchor for the recommendation.
+
+    Returns None if neither side yields any fields (e.g. a free-text fallback
+    that didn't preserve the schema shape).
     """
     import re
 
@@ -1314,10 +1326,16 @@ def _build_trade_setup_block(trader_plan: str | None, pm_decision: str | None) -
         m = re.search(rf"\*\*{re.escape(label)}\*\*:\s*([^\n]+)", text)
         return m.group(1).strip() if m else None
 
+    entry_price = _grab(trader_plan, "Entry Price")
+    if not entry_price and key_levels:
+        m = re.search(r"Latest close:\s*([0-9][0-9.,]*)", key_levels)
+        if m:
+            entry_price = f"{m.group(1).strip()} _(reference: latest close — Hold/Sell has no buy entry)_"
+
     fields = [
         ("Action", _grab(trader_plan, "Action")),
         ("Rating", _grab(pm_decision, "Rating")),
-        ("Entry Price", _grab(trader_plan, "Entry Price")),
+        ("Entry Price", entry_price),
         ("Stop Loss", _grab(trader_plan, "Stop Loss")),
         ("Position Sizing", _grab(trader_plan, "Position Sizing")),
         ("Price Target", _grab(pm_decision, "Price Target")),
@@ -1344,6 +1362,7 @@ def save_report_to_disk(final_state, ticker: str, save_path: Path):
     setup_block = _build_trade_setup_block(
         final_state.get("trader_investment_plan"),
         (final_state.get("risk_debate_state") or {}).get("judge_decision"),
+        final_state.get("key_levels"),
     )
     if setup_block:
         sections.append(setup_block)
