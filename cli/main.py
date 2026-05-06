@@ -1297,10 +1297,56 @@ def _strip_outer_hrules(text: str) -> str:
     return "\n".join(lines)
 
 
+def _build_trade_setup_block(trader_plan: str | None, pm_decision: str | None) -> str | None:
+    """Extract the headline trade-setup numbers and render them as a top-of-report block.
+
+    Parses the rendered markdown produced by `render_trader_proposal` (Action,
+    Entry Price, Stop Loss, Position Sizing) and `render_pm_decision` (Rating,
+    Price Target, Time Horizon). The reader sees the assumed entry and stop
+    immediately, before scrolling. Returns None if neither side yields any
+    fields (e.g. a free-text fallback that didn't preserve the schema shape).
+    """
+    import re
+
+    def _grab(text: str | None, label: str) -> str | None:
+        if not text:
+            return None
+        m = re.search(rf"\*\*{re.escape(label)}\*\*:\s*([^\n]+)", text)
+        return m.group(1).strip() if m else None
+
+    fields = [
+        ("Action", _grab(trader_plan, "Action")),
+        ("Rating", _grab(pm_decision, "Rating")),
+        ("Entry Price", _grab(trader_plan, "Entry Price")),
+        ("Stop Loss", _grab(trader_plan, "Stop Loss")),
+        ("Position Sizing", _grab(trader_plan, "Position Sizing")),
+        ("Price Target", _grab(pm_decision, "Price Target")),
+        ("Time Horizon", _grab(pm_decision, "Time Horizon")),
+    ]
+    rows = [(label, value) for label, value in fields if value]
+    if not rows:
+        return None
+
+    body = "\n".join(f"- **{label}**: {value}" for label, value in rows)
+    return (
+        "## Trade Setup at a Glance\n\n"
+        f"{body}\n\n"
+        "_Numbers below are the assumed levels at the time of writing. "
+        "Scroll for the full analyst, research, trader, risk, and portfolio sections._"
+    )
+
+
 def save_report_to_disk(final_state, ticker: str, save_path: Path):
     """Save complete analysis report to disk with organized subfolders."""
     save_path.mkdir(parents=True, exist_ok=True)
     sections = []
+
+    setup_block = _build_trade_setup_block(
+        final_state.get("trader_investment_plan"),
+        (final_state.get("risk_debate_state") or {}).get("judge_decision"),
+    )
+    if setup_block:
+        sections.append(setup_block)
 
     # 1. Analysts (preamble stripped to drop any chatty model preamble)
     analysts_dir = save_path / "1_analysts"
