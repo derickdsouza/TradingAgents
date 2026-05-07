@@ -33,23 +33,35 @@ class Reflector:
         final_decision: str,
         raw_return: float,
         alpha_return: float,
-        benchmark_name: str = "SPY",
+        benchmark: str = "SPY",
+        holding_days: int | None = None,
+        horizon: str | None = None,
     ) -> str:
         """Single reflection call on the final trade decision with outcome context.
 
         Used by Phase B deferred reflection. The final_trade_decision already
-        synthesises all analyst insights, so no separate market context is needed.
-        ``benchmark_name`` is the label used for the alpha line (e.g. ``"SPY"``
-        for US tickers, ``"^N225"`` for ``.T`` listings); defaults to SPY for
-        callers that haven't been updated to thread the benchmark through.
+        synthesises all analyst insights, so no separate market context is
+        needed. ``benchmark``, ``holding_days``, and ``horizon`` describe the
+        measurement window used and are surfaced in the prompt so generated
+        lessons are interpretable when re-read by future agents (e.g. an
+        Indian-ticker decision measured over 63 trading days vs Nifty 500 is
+        not comparable to a US-ticker decision over 5 days vs SPY).
         """
+        window_lines = []
+        if horizon:
+            window_lines.append(f"Horizon: {horizon}")
+        if holding_days is not None:
+            window_lines.append(f"Holding window: {holding_days} trading days")
+        window_block = ("\n".join(window_lines) + "\n") if window_lines else ""
+
         messages = [
             ("system", self.log_reflection_prompt),
             (
                 "human",
                 (
+                    f"{window_block}"
                     f"Raw return: {raw_return:+.1%}\n"
-                    f"Alpha vs {benchmark_name}: {alpha_return:+.1%}\n\n"
+                    f"Alpha vs {benchmark}: {alpha_return:+.1%}\n\n"
                     f"Final Decision:\n{final_decision}"
                 ),
             ),

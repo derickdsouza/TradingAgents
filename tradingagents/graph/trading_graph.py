@@ -41,6 +41,7 @@ from tradingagents.agents.utils.agent_utils import (
 
 from .checkpointer import checkpoint_step, clear_checkpoint, get_checkpointer, thread_id
 from .conditional_logic import ConditionalLogic
+from .outcome_policy import resolve_outcome_policy
 from .setup import GraphSetup
 from .propagation import Propagator
 from .reflection import Reflector
@@ -222,15 +223,20 @@ class TradingAgentsGraph:
         return benchmark_map.get("", "SPY")
 
     def _fetch_returns(
-        self, ticker: str, trade_date: str, holding_days: int = 5,
+        self,
+        ticker: str,
+        trade_date: str,
+        holding_days: int = 5,
         benchmark: str = "SPY",
     ) -> Tuple[Optional[float], Optional[float], Optional[int]]:
         """Fetch raw and alpha return for ticker over holding_days from trade_date.
 
-        ``benchmark`` is the index used as the alpha baseline (resolved by the
-        caller via ``_resolve_benchmark``). Returns ``(raw_return, alpha_return,
-        actual_holding_days)`` or ``(None, None, None)`` if price data is
-        unavailable (too recent, delisted, or network error).
+        ``benchmark`` selects the alpha reference (SPY for US, ^CRSLDX for
+        Indian listings, other regional indices via
+        ``outcome_policy.benchmark_for_ticker``). Returns
+        (raw_return, alpha_return, actual_holding_days) or
+        (None, None, None) if price data is unavailable (too recent, delisted,
+        or network error).
         """
         try:
             start = datetime.strptime(trade_date, "%Y-%m-%d")
@@ -264,30 +270,41 @@ class TradingAgentsGraph:
     def _resolve_pending_entries(self, ticker: str) -> None:
         """Resolve pending log entries for ticker at the start of a new run.
 
-        Fetches returns for each same-ticker pending entry, generates reflections,
-        then writes all updates in a single atomic batch write to avoid redundant I/O.
-        Skips entries whose price data is not yet available (too recent or delisted).
+        Holding window and alpha benchmark are derived from the configured
+        ``trading_horizon`` and the ticker's exchange suffix via
+        ``resolve_outcome_policy``. An entry stays pending if the requested
+        holding window has not yet elapsed (insufficient trading-day data
+        in yfinance). Generates reflections and writes all updates in a
+        single atomic batch write to avoid redundant I/O.
 
-        Trade-off: only same-ticker entries are resolved per run.  Entries for
-        other tickers accumulate until that ticker is run again.
+        Trade-off: only same-ticker entries are resolved per run.  Entries
+        for other tickers accumulate until that ticker is run again.
         """
         pending = [e for e in self.memory_log.get_pending_entries() if e["ticker"] == ticker]
         if not pending:
             return
 
-        benchmark = self._resolve_benchmark(ticker)
+        policy = resolve_outcome_policy(self.config, ticker)
+
         updates = []
         for entry in pending:
             raw, alpha, days = self._fetch_returns(
-                ticker, entry["date"], benchmark=benchmark,
+                ticker,
+                entry["date"],
+                holding_days=policy.holding_days,
+                benchmark=policy.benchmark,
             )
             if raw is None:
                 continue  # price not available yet — try again next run
+            if days is not None and days < policy.holding_days:
+                continue  # horizon has not elapsed — leave pending until it ripens
             reflection = self.reflector.reflect_on_final_decision(
                 final_decision=entry.get("decision", ""),
                 raw_return=raw,
                 alpha_return=alpha,
-                benchmark_name=benchmark,
+                benchmark=policy.benchmark,
+                holding_days=days,
+                horizon=policy.horizon,
             )
             updates.append({
                 "ticker": ticker,

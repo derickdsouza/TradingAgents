@@ -593,7 +593,7 @@ class TestDeferredReflection:
         assert TradingAgentsGraph._resolve_benchmark(mock_graph, "7203.t") == "^N225"
 
     def test_reflector_includes_benchmark_in_label(self):
-        """benchmark_name appears in the prompt label, not 'SPY' hardcoded."""
+        """benchmark appears in the prompt label, not 'SPY' hardcoded."""
         mock_llm = MagicMock()
         mock_llm.invoke.return_value.content = "Directionally correct."
         reflector = Reflector(mock_llm)
@@ -601,7 +601,7 @@ class TestDeferredReflection:
             final_decision=DECISION_BUY,
             raw_return=0.05,
             alpha_return=0.02,
-            benchmark_name="^N225",
+            benchmark="^N225",
         )
         messages = mock_llm.invoke.call_args[0][0]
         human_content = next(content for role, content in messages if role == "human")
@@ -609,7 +609,7 @@ class TestDeferredReflection:
         assert "Alpha vs SPY:" not in human_content
 
     def test_reflector_defaults_to_spy_for_unupdated_callers(self):
-        """Default benchmark_name keeps the SPY label for legacy callers."""
+        """Default benchmark keeps the SPY label for legacy callers."""
         mock_llm = MagicMock()
         mock_llm.invoke.return_value.content = "ok"
         reflector = Reflector(mock_llm)
@@ -630,10 +630,83 @@ class TestDeferredReflection:
         log.store_decision("AAPL", "2026-01-10", DECISION_BUY)
         mock_graph = MagicMock(spec=TradingAgentsGraph)
         mock_graph.memory_log = log
-        mock_graph._fetch_returns = MagicMock(return_value=(0.05, 0.02, 5))
+        mock_graph._fetch_returns = MagicMock(return_value=(0.05, 0.02, 20))
+        mock_graph.config = {"trading_horizon": "swing"}
         TradingAgentsGraph._resolve_pending_entries(mock_graph, "NVDA")
         mock_graph._fetch_returns.assert_not_called()
         assert len(log.get_pending_entries()) == 1
+
+    # Reflector: horizon, holding-window, and benchmark in prompt
+
+    def test_reflect_includes_benchmark_name_in_prompt(self):
+        """The benchmark passed by the resolver appears in the human message,
+        so reflections written for non-US tickers correctly cite Nifty 500
+        (not SPY) when the call ran against an Indian listing."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value.content = "OK."
+        reflector = Reflector(mock_llm)
+        reflector.reflect_on_final_decision(
+            final_decision=DECISION_BUY,
+            raw_return=0.04,
+            alpha_return=0.01,
+            benchmark="^CRSLDX",
+            holding_days=63,
+            horizon="position",
+        )
+        messages = mock_llm.invoke.call_args[0][0]
+        human = next(content for role, content in messages if role == "human")
+        assert "Alpha vs ^CRSLDX" in human
+        assert "Holding window: 63 trading days" in human
+        assert "Horizon: position" in human
+
+    def test_reflect_default_benchmark_is_spy(self):
+        """When the caller omits benchmark/horizon (legacy callers), the prompt
+        falls back to SPY without surfacing window metadata."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value.content = "OK."
+        reflector = Reflector(mock_llm)
+        reflector.reflect_on_final_decision(
+            final_decision=DECISION_BUY, raw_return=0.04, alpha_return=0.01
+        )
+        messages = mock_llm.invoke.call_args[0][0]
+        human = next(content for role, content in messages if role == "human")
+        assert "Alpha vs SPY" in human
+
+    # Resolver: horizon-driven ripeness and benchmark routing
+
+    def test_resolve_skips_entry_when_horizon_not_ripe(self, tmp_path):
+        """Position horizon (63 trading days) but only 20 days of price data
+        available → entry stays pending until enough data accumulates."""
+        log = make_log(tmp_path)
+        log.store_decision("NVDA", "2026-01-05", DECISION_BUY)
+        mock_graph = MagicMock(spec=TradingAgentsGraph)
+        mock_graph.memory_log = log
+        mock_graph.reflector = MagicMock()
+        mock_graph.config = {"trading_horizon": "position"}
+        # _fetch_returns finds only 20 trading days of data — short of the
+        # 63 the position horizon requires.
+        mock_graph._fetch_returns = MagicMock(return_value=(0.05, 0.02, 20))
+        TradingAgentsGraph._resolve_pending_entries(mock_graph, "NVDA")
+        assert len(log.get_pending_entries()) == 1
+        mock_graph.reflector.reflect_on_final_decision.assert_not_called()
+
+    def test_resolve_uses_indian_benchmark_for_ns_ticker(self, tmp_path):
+        """For an .NS ticker, _fetch_returns is called with benchmark='^CRSLDX'
+        (not SPY), and the reflector is told the same."""
+        log = make_log(tmp_path)
+        log.store_decision("RELIANCE.NS", "2026-01-05", DECISION_BUY)
+        mock_reflector = MagicMock()
+        mock_reflector.reflect_on_final_decision.return_value = "Captured Nifty alpha."
+        mock_graph = MagicMock(spec=TradingAgentsGraph)
+        mock_graph.memory_log = log
+        mock_graph.reflector = mock_reflector
+        mock_graph.config = {"trading_horizon": "swing"}
+        mock_graph._fetch_returns = MagicMock(return_value=(0.06, 0.02, 20))
+        TradingAgentsGraph._resolve_pending_entries(mock_graph, "RELIANCE.NS")
+        assert mock_graph._fetch_returns.call_args.kwargs["benchmark"] == "^CRSLDX"
+        assert mock_graph._fetch_returns.call_args.kwargs["holding_days"] == 20
+        assert mock_reflector.reflect_on_final_decision.call_args.kwargs["benchmark"] == "^CRSLDX"
+        assert mock_reflector.reflect_on_final_decision.call_args.kwargs["horizon"] == "swing"
 
     def test_resolve_marks_entry_completed(self, tmp_path):
         """After resolve, get_pending_entries() is empty and the entry has a REFLECTION."""
@@ -644,7 +717,10 @@ class TestDeferredReflection:
         mock_graph = MagicMock(spec=TradingAgentsGraph)
         mock_graph.memory_log = log
         mock_graph.reflector = mock_reflector
-        mock_graph._fetch_returns = MagicMock(return_value=(0.05, 0.02, 5))
+        mock_graph.config = {"trading_horizon": "swing"}
+        # Swing horizon resolves at 20 trading days; return enough days so the
+        # entry is considered ripe and gets resolved rather than left pending.
+        mock_graph._fetch_returns = MagicMock(return_value=(0.05, 0.02, 20))
         TradingAgentsGraph._resolve_pending_entries(mock_graph, "NVDA")
         assert log.get_pending_entries() == []
         entries = log.load_entries()
