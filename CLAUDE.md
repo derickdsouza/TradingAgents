@@ -195,6 +195,75 @@ Each commit on `local-patches` should:
 
 ---
 
+## Preferred local seams
+
+Fork-specific behavior should accumulate behind named, stable seams instead of
+sprawling across upstream-owned modules. Edits inside a seam don't conflict
+with upstream rewrites; edits inside upstream files do. Each seam below is a
+place to add new local behavior without touching upstream prose.
+
+| Seam | Purpose | Location |
+|---|---|---|
+| **Decision contract validators** | Enforce semantic trading invariants on Trader/Portfolio Manager structured output (e.g. stop below entry on a long Hold). Caught in code, not prompts. | planned: `tradingagents/contracts/` |
+| **Evidence ledger** | Compact structured facts (key levels, regime, news, dates) threaded through agent state so prose reports don't carry the load. | planned: `tradingagents/state/evidence.py` |
+| **Prompt overlays** | Fork-specific prompt fragments layered onto upstream prompt scaffolds at the call site. | planned: `tradingagents/prompts/overlays/` |
+| **Manager scorecards** | Explicit, weighted reasoning surfaces for Research Manager and Portfolio Manager, aligned with the evidence ledger. | planned: `tradingagents/agents/managers/scorecard.py` |
+| **Outcome memory policy** | Horizon- and region-aware reflection: resolve trade outcomes against the right benchmark and holding period. | planned: `tradingagents/memory/outcome_policy.py` |
+| **Evaluation harness** | Regression tests over report-quality invariants and decision contracts. Runs locally and in CI. | planned: `tests/eval/` |
+| **Vendor routing** | Region-specific data providers (yfinance for US, NSE/BSE handling for `.NS`/`.BO`). | existing: `tradingagents/dataflows/y_finance.py` |
+| **Report renderers** | Markdown/PDF output shape, including stop-suppression logic and trade-setup formatting. | existing: `tradingagents/reports/` (and CLI) |
+
+When tracked work for any "planned" seam lands, update its row from `planned`
+to the actual path so this table stays load-bearing rather than aspirational.
+
+---
+
+## Direct edit vs. local adapter
+
+Default to a local seam. Edit upstream-owned files directly only when **all**
+of these hold:
+
+1. The change is genuinely upstream-shaped (a bug, a clearer comment, a
+   provider/model registry entry that any user would want).
+2. No existing seam covers it, and adding one would be over-engineering.
+3. The edit fits in a one-paragraph commit body — meaning a future reader can
+   reapply the intent on top of an upstream rewrite without archaeology.
+
+If any of those fail, prefer one of:
+
+- Hook a small call from upstream code into a fork-owned module (a 1–3 line
+  edit upstream + the real logic in a local file). The 1–3 lines are cheap to
+  re-apply on rebase; the local file is rebase-safe.
+- Add the behavior to an existing seam.
+- Stand up a new seam (and add a row to the table above).
+
+If a deep upstream edit is genuinely required, factor it into its own focused
+commit on `local-patches` so a future rebase can drop or reshape it without
+unrelated collateral.
+
+---
+
+## Minimum verification
+
+After rebasing onto a new `upstream/main`, or after editing any seam:
+
+```bash
+./tradingagents/bin/python -m pytest -q
+```
+
+Once the evaluation harness exists, also run its subset when the change
+touches decision contracts, report shape, or outcome resolution:
+
+```bash
+./tradingagents/bin/python -m pytest -q tests/eval
+```
+
+Mirror any edited `tradingagents/<path>.py` into the venv site-packages copy
+(see "Mirroring to the venv site-packages" below) before running pytest, or
+the test will exercise the stale install rather than your edit.
+
+---
+
 ## Files that should never leave the local checkout
 
 The following are in `.git/info/exclude` (local, not in upstream's `.gitignore`):
