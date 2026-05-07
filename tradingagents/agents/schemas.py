@@ -161,7 +161,12 @@ class TraderProposal(BaseModel):
             "thesis is invalidated and the position is closed. The line in "
             "the sand from entry. Either a technical level (just below 20-day "
             "low / swing low / 200-DMA) or a thesis-break level (round number "
-            "representing fundamental deterioration)."
+            "representing fundamental deterioration). "
+            "DIRECTIONAL CONSTRAINT: for a long-side action (Buy / Hold of an "
+            "existing long), this number MUST be BELOW the current close. For "
+            "a Sell / short, it MUST be ABOVE. A level above current price on "
+            "a long is a target or upgrade trigger, NOT a stop — leave the "
+            "field NULL rather than misuse it."
         ),
     )
     stop_initial_basis: Optional[str] = Field(
@@ -180,7 +185,13 @@ class TraderProposal(BaseModel):
             "moves in favour. Typically anchored to Chandelier Exit (ATR-"
             "based), AVWAP-52wL, or a rising 50-DMA. DISTINCT from "
             "`stop_initial`: trailing stops are dynamic; initial stops are "
-            "fixed. Many real swing setups carry both simultaneously."
+            "fixed. Many real swing setups carry both simultaneously. "
+            "DIRECTIONAL CONSTRAINT: for a long-side action (Buy / Hold of an "
+            "existing long), this number MUST be BELOW the current close. For "
+            "a Sell / short, it MUST be ABOVE. NEVER use this field for an "
+            "upgrade trigger, breakout-confirmation level, prior swing high, "
+            "or upside target — those are NOT stops. If no dynamic exit "
+            "applies (e.g. Hold with no incremental dynamic exit), leave NULL."
         ),
     )
     stop_trailing_basis: Optional[str] = Field(

@@ -1370,6 +1370,12 @@ def _build_trade_setup_block(
     sees the price at which the Hold/Sell verdict is being delivered. Without
     this, a Hold report has no anchor for the recommendation.
 
+    Stops are sanity-checked against the latest close: a "trailing stop" that
+    sits above current price for a long is structurally a target/trigger, not
+    a stop. When the LLM misuses the field that way the bad row is dropped
+    from this header (the underlying trader.md is left untouched as a record
+    of what the agent actually wrote) and a footnote flags it.
+
     Returns None if neither side yields any fields (e.g. a free-text fallback
     that didn't preserve the schema shape).
     """
@@ -1380,6 +1386,48 @@ def _build_trade_setup_block(
             return None
         m = re.search(rf"\*\*{re.escape(label)}\*\*:\s*([^\n]+)", text)
         return m.group(1).strip() if m else None
+
+    def _leading_number(value: str | None) -> float | None:
+        if not value:
+            return None
+        m = re.match(r"\s*([0-9]+(?:\.[0-9]+)?)", value)
+        try:
+            return float(m.group(1)) if m else None
+        except (TypeError, ValueError):
+            return None
+
+    current_close: float | None = None
+    if key_levels:
+        m = re.search(r"Latest close:\s*([0-9][0-9.,]*)", key_levels)
+        if m:
+            try:
+                current_close = float(m.group(1).replace(",", ""))
+            except ValueError:
+                current_close = None
+
+    action = _grab(trader_plan, "Action")
+    action_norm = (action or "").strip().lower()
+    is_long_side = action_norm in {"buy", "hold"}
+    is_short_side = action_norm == "sell"
+
+    def _stop_is_valid_for_long(value_str: str | None) -> bool:
+        """A long-side stop must sit BELOW current price; otherwise it's a
+        target/trigger, not a stop. Without a known close, accept the value
+        (we can't disprove it)."""
+        if current_close is None:
+            return True
+        n = _leading_number(value_str)
+        if n is None:
+            return True
+        return n < current_close
+
+    def _stop_is_valid_for_short(value_str: str | None) -> bool:
+        if current_close is None:
+            return True
+        n = _leading_number(value_str)
+        if n is None:
+            return True
+        return n > current_close
 
     entry_price = _grab(trader_plan, "Entry Price")
     if not entry_price and key_levels:
@@ -1392,12 +1440,40 @@ def _build_trade_setup_block(
         if m:
             entry_price = f"{m.group(1).strip()} — _50-DMA fallback (Trader did not specify an anchor level)_"
 
+    initial_stop_raw = _grab(trader_plan, "Initial Stop")
+    trailing_stop_raw = _grab(trader_plan, "Trailing Stop")
+
+    misused_stops: list[str] = []
+    initial_stop_clean = initial_stop_raw
+    trailing_stop_clean = trailing_stop_raw
+    if is_long_side:
+        if initial_stop_raw and not _stop_is_valid_for_long(initial_stop_raw):
+            misused_stops.append(f"Initial Stop ({_leading_number(initial_stop_raw):.2f})")
+            initial_stop_clean = None
+        if trailing_stop_raw and not _stop_is_valid_for_long(trailing_stop_raw):
+            misused_stops.append(f"Trailing Stop ({_leading_number(trailing_stop_raw):.2f})")
+            trailing_stop_clean = None
+    elif is_short_side:
+        if initial_stop_raw and not _stop_is_valid_for_short(initial_stop_raw):
+            misused_stops.append(f"Initial Stop ({_leading_number(initial_stop_raw):.2f})")
+            initial_stop_clean = None
+        if trailing_stop_raw and not _stop_is_valid_for_short(trailing_stop_raw):
+            misused_stops.append(f"Trailing Stop ({_leading_number(trailing_stop_raw):.2f})")
+            trailing_stop_clean = None
+
+    current_price_value = (
+        f"{current_close:.2f} — _Latest close from yfinance_"
+        if current_close is not None
+        else None
+    )
+
     fields = [
-        ("Action", _grab(trader_plan, "Action")),
+        ("Current Price", current_price_value),
+        ("Action", action),
         ("Rating", _grab(pm_decision, "Rating")),
         ("Entry Price", entry_price),
-        ("Initial Stop", _grab(trader_plan, "Initial Stop")),
-        ("Trailing Stop", _grab(trader_plan, "Trailing Stop")),
+        ("Initial Stop", initial_stop_clean),
+        ("Trailing Stop", trailing_stop_clean),
         ("Position Sizing", _grab(trader_plan, "Position Sizing")),
         ("Price Target", _grab(pm_decision, "Price Target")),
         ("Time Horizon", _grab(pm_decision, "Time Horizon")),
@@ -1407,11 +1483,23 @@ def _build_trade_setup_block(
         return None
 
     body = "\n".join(f"- **{label}**: {value}" for label, value in rows)
+    footer = (
+        "_Numbers below are the assumed levels at the time of writing. "
+        "Scroll for the full analyst, research, trader, risk, and portfolio sections._"
+    )
+    if misused_stops:
+        side_label = "long" if is_long_side else "short"
+        footer = (
+            f"_⚠ Suppressed structurally invalid stop(s) for a {side_label} setup "
+            f"(value on wrong side of current price ₹{current_close:.2f}): "
+            f"{', '.join(misused_stops)}. The Trader's prose in `3_trading/trader.md` "
+            f"is preserved verbatim; this header drops the bad row(s) so the at-a-glance "
+            f"summary doesn't mislead._\n\n"
+        ) + footer
     return (
         "## Trade Setup at a Glance\n\n"
         f"{body}\n\n"
-        "_Numbers below are the assumed levels at the time of writing. "
-        "Scroll for the full analyst, research, trader, risk, and portfolio sections._"
+        f"{footer}"
     )
 
 
