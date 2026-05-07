@@ -11,8 +11,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tradingagents.agents.managers.portfolio_manager import create_portfolio_manager
 from tradingagents.agents.managers.research_manager import create_research_manager
 from tradingagents.agents.schemas import (
+    PortfolioDecision,
     PortfolioRating,
     ResearchPlan,
     TraderAction,
@@ -21,6 +23,10 @@ from tradingagents.agents.schemas import (
     render_trader_proposal,
 )
 from tradingagents.agents.trader.trader import create_trader
+from tradingagents.agents.utils.evidence_ledger import (
+    EvidenceFact,
+    EvidenceLedger,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +222,59 @@ class TestTraderAgent:
         assert "**Validation Notes**" in plan
         assert "435" in plan and "Trailing Stop" in plan
 
+    def test_evidence_ledger_block_appears_in_prompt_when_state_has_ledger(self):
+        # When the state carries a populated EvidenceLedger, the trader's
+        # user message should include the rendered ledger block instead
+        # of (or alongside) the legacy key_levels string. This is the
+        # consumer-side wiring of the gly.2 seam.
+        captured = {}
+        llm = _structured_trader_llm(captured)
+        ledger = EvidenceLedger(
+            ticker="NVDA",
+            trade_date="2026-05-07",
+            latest_close=EvidenceFact(value=200.50, source="yfinance"),
+            sma_50=EvidenceFact(value=190.00, source="yfinance"),
+        )
+        state = {
+            "company_of_interest": "NVDA",
+            "investment_plan": "**Recommendation**: Buy\n**Rationale**: ...\n**Strategic Actions**: ...",
+            "evidence_ledger": ledger,
+        }
+        trader = create_trader(llm)
+        trader(state)
+        prompt = captured["prompt"]
+        assert any("Evidence Ledger" in m["content"] for m in prompt)
+        assert any("Latest close: 200.50" in m["content"] for m in prompt)
+
+    def test_ledger_latest_close_drives_stop_validator(self):
+        # The validator's directional check must see the ledger's
+        # latest_close even when key_levels is absent — the ledger is
+        # the canonical source going forward.
+        captured = {}
+        proposal = TraderProposal(
+            action=TraderAction.HOLD,
+            reasoning="Letting the breakout confirm before adding.",
+            stop_trailing=435.0,
+            stop_trailing_basis="20-day high — breakout confirmation level",
+        )
+        llm = _structured_trader_llm(captured, proposal)
+        ledger = EvidenceLedger(
+            ticker="TRIVENI.NS",
+            trade_date="2026-05-07",
+            latest_close=EvidenceFact(value=403.40, source="yfinance"),
+        )
+        state = {
+            "company_of_interest": "TRIVENI.NS",
+            "investment_plan": "**Recommendation**: Hold\n**Rationale**: ...\n**Strategic Actions**: ...",
+            "evidence_ledger": ledger,
+            # key_levels intentionally absent — ledger must be sufficient
+        }
+        trader = create_trader(llm)
+        result = trader(state)
+        plan = result["trader_investment_plan"]
+        assert "**Trailing Stop**: 435.0" not in plan
+        assert "**Validation Notes**" in plan
+
     def test_valid_long_proposal_renders_without_validation_notes(self):
         # When latest_close is known and stops are correctly placed the
         # validator must be a no-op — no Validation Notes footer.
@@ -311,3 +370,77 @@ class TestResearchManagerAgent:
         rm = create_research_manager(llm)
         result = rm(_make_rm_state())
         assert result["investment_plan"] == plain_response
+
+    def test_evidence_ledger_block_appears_in_prompt(self):
+        captured = {}
+        llm = _structured_rm_llm(captured)
+        rm = create_research_manager(llm)
+        state = _make_rm_state()
+        state["evidence_ledger"] = EvidenceLedger(
+            ticker="NVDA",
+            trade_date="2026-05-07",
+            latest_close=EvidenceFact(value=200.50, source="yfinance"),
+        )
+        rm(state)
+        prompt = captured["prompt"]
+        assert "Evidence Ledger" in prompt
+        assert "Latest close: 200.50" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Portfolio Manager: ledger inclusion in prompt
+# ---------------------------------------------------------------------------
+
+
+def _make_pm_state():
+    return {
+        "company_of_interest": "NVDA",
+        "investment_plan": "**Recommendation**: Buy\n**Rationale**: ...",
+        "trader_investment_plan": "**Action**: Buy\n**Reasoning**: ...",
+        "risk_debate_state": {
+            "history": "Risk analyst arguments here.",
+            "aggressive_history": "",
+            "conservative_history": "",
+            "neutral_history": "",
+            "current_aggressive_response": "",
+            "current_conservative_response": "",
+            "current_neutral_response": "",
+            "latest_speaker": "",
+            "judge_decision": "",
+            "count": 1,
+        },
+    }
+
+
+def _structured_pm_llm(captured: dict, decision: PortfolioDecision | None = None):
+    if decision is None:
+        decision = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="Hold and reassess.",
+            investment_thesis="Balanced view across analysts.",
+        )
+    structured = MagicMock()
+    structured.invoke.side_effect = lambda prompt: (
+        captured.__setitem__("prompt", prompt) or decision
+    )
+    llm = MagicMock()
+    llm.with_structured_output.return_value = structured
+    return llm
+
+
+@pytest.mark.unit
+class TestPortfolioManagerAgent:
+    def test_evidence_ledger_block_appears_in_prompt(self):
+        captured = {}
+        llm = _structured_pm_llm(captured)
+        pm = create_portfolio_manager(llm)
+        state = _make_pm_state()
+        state["evidence_ledger"] = EvidenceLedger(
+            ticker="NVDA",
+            trade_date="2026-05-07",
+            latest_close=EvidenceFact(value=200.50, source="yfinance"),
+        )
+        pm(state)
+        prompt = captured["prompt"]
+        assert "Evidence Ledger" in prompt
+        assert "Latest close: 200.50" in prompt

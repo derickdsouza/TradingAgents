@@ -19,6 +19,7 @@ from tradingagents.agents.utils.decision_contracts import (
     render_validation_notes,
     validate_trader_proposal,
 )
+from tradingagents.agents.utils.evidence_ledger import render_evidence_ledger
 from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
@@ -55,9 +56,15 @@ def create_trader(llm):
         investment_plan = state["investment_plan"]
         key_levels = state.get("key_levels", "")
         market_regime = state.get("market_regime", "")
+        ledger = state.get("evidence_ledger")
+        ledger_block_text = render_evidence_ledger(ledger) if ledger else ""
 
-        levels_block = f"\n\n{key_levels}" if key_levels else ""
-        regime_block = f"\n\n{market_regime}" if market_regime else ""
+        if ledger_block_text:
+            levels_block = f"\n\n{ledger_block_text}"
+            regime_block = ""
+        else:
+            levels_block = f"\n\n{key_levels}" if key_levels else ""
+            regime_block = f"\n\n{market_regime}" if market_regime else ""
 
         messages = [
             {
@@ -109,8 +116,11 @@ def create_trader(llm):
             },
         ]
 
+        ledger_close: Optional[float] = None
+        if ledger and ledger.latest_close and isinstance(ledger.latest_close.value, (int, float)):
+            ledger_close = float(ledger.latest_close.value)
         validation_context = TraderValidationContext(
-            latest_close=_parse_latest_close(key_levels),
+            latest_close=ledger_close if ledger_close is not None else _parse_latest_close(key_levels),
         )
 
         def _validated_render(proposal: TraderProposal) -> str:

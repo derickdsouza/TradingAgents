@@ -16,6 +16,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_horizon_instruction,
     get_language_instruction,
 )
+from tradingagents.agents.utils.evidence_ledger import render_evidence_ledger
 from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
@@ -34,6 +35,8 @@ def create_portfolio_manager(llm):
         trader_plan = state["trader_investment_plan"]
         key_levels = state.get("key_levels", "")
         market_regime = state.get("market_regime", "")
+        ledger = state.get("evidence_ledger")
+        ledger_block_text = render_evidence_ledger(ledger) if ledger else ""
 
         past_context = state.get("past_context", "")
         lessons_line = (
@@ -41,8 +44,12 @@ def create_portfolio_manager(llm):
             if past_context
             else ""
         )
-        levels_block = f"\n\n{key_levels}" if key_levels else ""
-        regime_block = f"\n\n{market_regime}" if market_regime else ""
+        if ledger_block_text:
+            levels_block = f"\n\n{ledger_block_text}"
+            regime_block = ""
+        else:
+            levels_block = f"\n\n{key_levels}" if key_levels else ""
+            regime_block = f"\n\n{market_regime}" if market_regime else ""
 
         prompt = f"""As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.
 

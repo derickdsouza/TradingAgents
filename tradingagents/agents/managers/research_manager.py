@@ -8,6 +8,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_horizon_instruction,
     get_language_instruction,
 )
+from tradingagents.agents.utils.evidence_ledger import render_evidence_ledger
 from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
@@ -22,11 +23,20 @@ def create_research_manager(llm):
         history = state["investment_debate_state"].get("history", "")
         key_levels = state.get("key_levels", "")
         market_regime = state.get("market_regime", "")
+        ledger = state.get("evidence_ledger")
+        ledger_block_text = render_evidence_ledger(ledger) if ledger else ""
 
         investment_debate_state = state["investment_debate_state"]
 
-        levels_block = f"\n\n{key_levels}" if key_levels else ""
-        regime_block = f"\n\n{market_regime}" if market_regime else ""
+        # Prefer the structured ledger when populated; the legacy
+        # key_levels / market_regime strings remain the fallback so
+        # graphs without the analyst node still work.
+        if ledger_block_text:
+            levels_block = f"\n\n{ledger_block_text}"
+            regime_block = ""
+        else:
+            levels_block = f"\n\n{key_levels}" if key_levels else ""
+            regime_block = f"\n\n{market_regime}" if market_regime else ""
 
         prompt = f"""As the Research Manager and debate facilitator, your role is to critically evaluate this round of debate and deliver a clear, actionable investment plan for the trader.
 
