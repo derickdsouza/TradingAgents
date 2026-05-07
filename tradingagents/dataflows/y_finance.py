@@ -1,5 +1,5 @@
 from typing import Annotated
-from datetime import datetime
+from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 import pandas as pd
 import yfinance as yf
@@ -13,13 +13,16 @@ def get_YFin_data_online(
 ):
 
     datetime.strptime(start_date, "%Y-%m-%d")
-    datetime.strptime(end_date, "%Y-%m-%d")
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
 
     # Create ticker object
     ticker = yf.Ticker(symbol.upper())
 
-    # Fetch historical data for the specified date range
-    data = yf_retry(lambda: ticker.history(start=start_date, end=end_date))
+    # yfinance's `end` is exclusive — bump by a day so the caller's
+    # `end_date` is treated as inclusive (matching natural expectations
+    # and keeping today's bar in the response when `end_date` is today).
+    fetch_end = (end_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+    data = yf_retry(lambda: ticker.history(start=start_date, end=fetch_end))
 
     # Check if data is empty
     if data.empty:

@@ -45,12 +45,28 @@ def _clean_dataframe(data: pd.DataFrame) -> pd.DataFrame:
     return data
 
 
+_LIVE_CACHE_TTL_SECONDS = 30 * 60  # 30 min — keep in-progress bar reasonably fresh
+
+
 def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     """Fetch OHLCV data with caching, filtered to prevent look-ahead bias.
 
-    Downloads 15 years of data up to today and caches per symbol. On
+    Downloads 5 years of data up to today and caches per symbol. On
     subsequent calls the cache is reused. Rows after curr_date are
     filtered out so backtests never see future prices.
+
+    Two subtleties drive the implementation:
+
+    - yfinance's ``end`` parameter is **exclusive**. Passing today as
+      ``end`` silently drops today's bar (the symptom: "last price is
+      always yesterday"). We fetch through ``today + 1 day`` so today
+      gets included, whether the bar is settled or still in progress.
+
+    - For "live" calls (``curr_date`` is today or within ~2 days), the
+      cache gets a short TTL so a re-run later in the day picks up the
+      newer bar instead of replaying a stale 9am snapshot. Backtest
+      calls (``curr_date`` further in the past) hit the cache
+      indefinitely — historical data does not change.
     """
     # Reject ticker values that would escape the cache directory when
     # interpolated into the cache filename (e.g. ``../../tmp/x``).
@@ -59,11 +75,14 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     config = get_config()
     curr_date_dt = pd.to_datetime(curr_date)
 
-    # Cache uses a fixed window (15y to today) so one file per symbol
+    # Cache uses a fixed window (5y to today) so one file per symbol
     today_date = pd.Timestamp.today()
     start_date = today_date - pd.DateOffset(years=5)
     start_str = start_date.strftime("%Y-%m-%d")
     end_str = today_date.strftime("%Y-%m-%d")
+    # yfinance's end is exclusive — fetch through tomorrow so today's
+    # bar (settled or in-progress) actually lands in the cache.
+    fetch_end_str = (today_date + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
 
     os.makedirs(config["data_cache_dir"], exist_ok=True)
     data_file = os.path.join(
@@ -71,13 +90,23 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
         f"{safe_symbol}-YFin-data-{start_str}-{end_str}.csv",
     )
 
+    is_live = (today_date.normalize() - curr_date_dt.normalize()).days <= 2
+
+    cache_fresh = False
     if os.path.exists(data_file):
+        if is_live:
+            age = time.time() - os.path.getmtime(data_file)
+            cache_fresh = age < _LIVE_CACHE_TTL_SECONDS
+        else:
+            cache_fresh = True
+
+    if cache_fresh:
         data = pd.read_csv(data_file, on_bad_lines="skip", encoding="utf-8")
     else:
         data = yf_retry(lambda: yf.download(
             symbol,
             start=start_str,
-            end=end_str,
+            end=fetch_end_str,
             multi_level_index=False,
             progress=False,
             auto_adjust=True,
