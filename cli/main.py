@@ -2116,7 +2116,7 @@ def analyze(
              "Drives analyst lookback windows and the holding period the trader / PM target.",
     ),
     provider: str = typer.Option(
-        DEFAULTS["provider"], "--provider", "-p",
+        DEFAULTS["provider"], "--provider",
         help="LLM provider key (e.g. glm-anthropic, openai, anthropic, xai).",
     ),
     quick_model: str = typer.Option(
@@ -2179,7 +2179,7 @@ def analyze(
              "layout would otherwise be unreadable.",
     ),
     profile: Optional[str] = typer.Option(
-        None, "--profile",
+        None, "--profile", "-p",
         help=f"Named bundle of flag values: {', '.join(PROFILES)}. "
              "Explicit flags override profile values.",
     ),
