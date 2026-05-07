@@ -93,7 +93,10 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     is_live = (today_date.normalize() - curr_date_dt.normalize()).days <= 2
 
     cache_fresh = False
-    if os.path.exists(data_file):
+    if os.path.exists(data_file) and os.path.getsize(data_file) > 0:
+        # 0-byte cache files (e.g. from a previous failed write) would crash
+        # pd.read_csv with "No columns to parse from file". Treat empty
+        # files as a miss so the next call refetches.
         if is_live:
             age = time.time() - os.path.getmtime(data_file)
             cache_fresh = age < _LIVE_CACHE_TTL_SECONDS

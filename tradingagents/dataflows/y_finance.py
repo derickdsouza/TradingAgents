@@ -1090,11 +1090,30 @@ def get_stockstats_indicator(
     curr_date = curr_date_dt.strftime("%Y-%m-%d")
 
     try:
-        indicator_value = StockstatsUtils.get_stock_stats(
-            symbol,
-            indicator,
-            curr_date,
-        )
+        if indicator in _CUSTOM_INDICATORS:
+            # Custom indicators aren't part of stockstats' DSL — route them
+            # through _compute_custom_indicator the same way the bulk path
+            # does. Without this branch, stockstats tries to parse the name
+            # as DSL and raises "Invalid number of return arguments...".
+            from stockstats import wrap
+            data = load_ohlcv(symbol, curr_date)
+            df = wrap(data)
+            df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
+            df[indicator] = _compute_custom_indicator(
+                df, indicator, symbol=symbol, curr_date=curr_date
+            )
+            matching = df[df["Date"] == curr_date]
+            if matching.empty:
+                indicator_value = "N/A: Not a trading day (weekend or holiday)"
+            else:
+                v = matching[indicator].values[0]
+                indicator_value = "N/A" if pd.isna(v) else v
+        else:
+            indicator_value = StockstatsUtils.get_stock_stats(
+                symbol,
+                indicator,
+                curr_date,
+            )
     except Exception as e:
         print(
             f"Error getting stockstats indicator data for indicator {indicator} on {curr_date}: {e}"
