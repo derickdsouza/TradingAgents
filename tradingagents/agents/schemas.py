@@ -39,6 +39,142 @@ class PortfolioRating(str, Enum):
     SELL = "Sell"
 
 
+class Confidence(str, Enum):
+    """Manager confidence in the rating, used by the Evidence Scorecard."""
+
+    LOW = "Low"
+    MEDIUM = "Medium"
+    HIGH = "High"
+
+
+# ---------------------------------------------------------------------------
+# Evidence Scorecard
+# ---------------------------------------------------------------------------
+
+
+class EvidenceScorecard(BaseModel):
+    """Compact, named scoring of the evidence categories that drive the rating.
+
+    Both the Research Manager and the Portfolio Manager fill this when
+    issuing a rating so the trade-off between competing categories is
+    explicit instead of buried in prose. Each category scores from -2
+    (strongly bearish) to +2 (strongly bullish); 0 means insufficient
+    or balanced evidence. The rendered scorecard appears in the saved
+    report and lets evaluation harnesses pin rating drivers.
+    """
+
+    bull_case: int = Field(
+        ge=-2, le=2,
+        description=(
+            "Score for the bull side of the debate / argument. -2 to +2. "
+            "Higher = stronger bull conviction surfaced by the evidence."
+        ),
+    )
+    bear_case: int = Field(
+        ge=-2, le=2,
+        description=(
+            "Score for the bear side of the debate / argument. -2 to +2. "
+            "More negative = stronger bear conviction surfaced by the evidence."
+        ),
+    )
+    trend_technical: int = Field(
+        ge=-2, le=2,
+        description=(
+            "Trend / technical setup quality. -2 to +2. Reads MA structure, "
+            "breakout/breakdown signals, RS, and pattern integrity."
+        ),
+    )
+    fundamental_quality: int = Field(
+        ge=-2, le=2,
+        description=(
+            "Fundamental quality (margins, growth, returns on capital, "
+            "balance-sheet strength). -2 to +2."
+        ),
+    )
+    liquidity_risk: int = Field(
+        ge=-2, le=2,
+        description=(
+            "Liquidity and balance-sheet risk. -2 (severe risk) to +2 "
+            "(fortress balance sheet)."
+        ),
+    )
+    catalyst_clarity: int = Field(
+        ge=-2, le=2,
+        description=(
+            "Clarity and proximity of catalysts. -2 to +2. Higher = clearer "
+            "near-term drivers (earnings, product launches, macro events)."
+        ),
+    )
+    macro_regime: int = Field(
+        ge=-2, le=2,
+        description=(
+            "Macro / market-regime support. -2 to +2. Reads broad-market "
+            "trend, sector regime, and FII/DII flow context."
+        ),
+    )
+    valuation: int = Field(
+        ge=-2, le=2,
+        description=(
+            "Valuation tilt vs the thesis. -2 (stretched) to +2 (deeply "
+            "supportive). Use 0 when valuation is fair or unclear."
+        ),
+    )
+    confidence: Confidence = Field(
+        description="Overall confidence in the rating: Low / Medium / High.",
+    )
+    rating_rationale: str = Field(
+        description=(
+            "Concise explanation of how the scorecard maps to the assigned "
+            "rating tier. One to two sentences."
+        ),
+    )
+    tie_breaker: Optional[str] = Field(
+        default=None,
+        description=(
+            "REQUIRED when the rating is Hold: explicit explanation of why "
+            "the evidence is genuinely balanced rather than indecisive. "
+            "Optional otherwise."
+        ),
+    )
+    invalidating_evidence: str = Field(
+        description=(
+            "What would change the rating: for Buy/Sell name the specific "
+            "evidence that would downgrade/upgrade; for Hold name the trigger "
+            "that would break the balance."
+        ),
+    )
+
+
+def render_evidence_scorecard(sc: EvidenceScorecard) -> str:
+    """Render an EvidenceScorecard as a stable markdown block.
+
+    The block keeps category names and signed scores in a fixed order so
+    reports compare cleanly across runs and tests can pin specific lines.
+    """
+
+    def _signed(n: int) -> str:
+        return f"+{n}" if n > 0 else str(n)
+
+    lines = [
+        "**Scorecard**:",
+        f"- Bull Case: {_signed(sc.bull_case)}",
+        f"- Bear Case: {_signed(sc.bear_case)}",
+        f"- Trend / Technical: {_signed(sc.trend_technical)}",
+        f"- Fundamental Quality: {_signed(sc.fundamental_quality)}",
+        f"- Liquidity / Risk: {_signed(sc.liquidity_risk)}",
+        f"- Catalyst Clarity: {_signed(sc.catalyst_clarity)}",
+        f"- Macro / Regime: {_signed(sc.macro_regime)}",
+        f"- Valuation: {_signed(sc.valuation)}",
+        f"- Confidence: {sc.confidence.value}",
+        "",
+        f"**Rating Rationale**: {sc.rating_rationale}",
+    ]
+    if sc.tie_breaker:
+        lines.extend(["", f"**Tie Breaker**: {sc.tie_breaker}"])
+    lines.extend(["", f"**Invalidating Evidence**: {sc.invalidating_evidence}"])
+    return "\n".join(lines)
+
+
 class TraderAction(str, Enum):
     """3-tier transaction direction used by the Trader.
 
@@ -88,17 +224,29 @@ class ResearchPlan(BaseModel):
             "including position sizing guidance consistent with the rating."
         ),
     )
+    scorecard: Optional[EvidenceScorecard] = Field(
+        default=None,
+        description=(
+            "Optional structured evidence scorecard that captures how named "
+            "categories were weighed before assigning the rating. Fill this "
+            "whenever evidence categories can be rated; the rendered block "
+            "is shown in the report and consumed by evaluation harnesses."
+        ),
+    )
 
 
 def render_research_plan(plan: ResearchPlan) -> str:
     """Render a ResearchPlan to markdown for storage and the trader's prompt context."""
-    return "\n".join([
+    parts = [
         f"**Recommendation**: {plan.recommendation.value}",
         "",
         f"**Rationale**: {plan.rationale}",
         "",
         f"**Strategic Actions**: {plan.strategic_actions}",
-    ])
+    ]
+    if plan.scorecard is not None:
+        parts.extend(["", render_evidence_scorecard(plan.scorecard)])
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +443,14 @@ class PortfolioDecision(BaseModel):
         default=None,
         description="Optional recommended holding period, e.g. '3-6 months'.",
     )
+    scorecard: Optional[EvidenceScorecard] = Field(
+        default=None,
+        description=(
+            "Optional structured evidence scorecard mirroring the Research "
+            "Manager's; fill this so the final rating is grounded in named "
+            "evidence categories instead of only narrative synthesis."
+        ),
+    )
 
 
 def render_pm_decision(decision: PortfolioDecision) -> str:
@@ -316,4 +472,6 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
         parts.extend(["", f"**Price Target**: {decision.price_target}"])
     if decision.time_horizon:
         parts.extend(["", f"**Time Horizon**: {decision.time_horizon}"])
+    if decision.scorecard is not None:
+        parts.extend(["", render_evidence_scorecard(decision.scorecard)])
     return "\n".join(parts)

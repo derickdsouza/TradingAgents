@@ -14,11 +14,14 @@ import pytest
 from tradingagents.agents.managers.portfolio_manager import create_portfolio_manager
 from tradingagents.agents.managers.research_manager import create_research_manager
 from tradingagents.agents.schemas import (
+    Confidence,
+    EvidenceScorecard,
     PortfolioDecision,
     PortfolioRating,
     ResearchPlan,
     TraderAction,
     TraderProposal,
+    render_pm_decision,
     render_research_plan,
     render_trader_proposal,
 )
@@ -121,6 +124,131 @@ class TestRenderResearchPlan:
             )
             md = render_research_plan(p)
             assert f"**Recommendation**: {rating.value}" in md
+
+
+# ---------------------------------------------------------------------------
+# Evidence Scorecard (gly.4)
+# ---------------------------------------------------------------------------
+
+
+def _full_scorecard(**overrides) -> EvidenceScorecard:
+    base = dict(
+        bull_case=2,
+        bear_case=-1,
+        trend_technical=2,
+        fundamental_quality=1,
+        liquidity_risk=0,
+        catalyst_clarity=1,
+        macro_regime=1,
+        valuation=0,
+        confidence=Confidence.HIGH,
+        rating_rationale=(
+            "Bull case strongly outweighs bear; trend and catalysts align."
+        ),
+        invalidating_evidence=(
+            "Loss of 50-DMA on volume, or a guidance cut at next earnings."
+        ),
+    )
+    base.update(overrides)
+    return EvidenceScorecard(**base)
+
+
+@pytest.mark.unit
+class TestEvidenceScorecard:
+    def test_full_scorecard_constructs(self):
+        sc = _full_scorecard()
+        assert sc.bull_case == 2
+        assert sc.confidence == Confidence.HIGH
+        assert sc.tie_breaker is None  # optional
+
+    def test_score_range_minus_two_to_plus_two_is_enforced(self):
+        with pytest.raises(Exception):
+            _full_scorecard(bull_case=3)
+        with pytest.raises(Exception):
+            _full_scorecard(bear_case=-3)
+
+    def test_tie_breaker_optional_and_renders_when_present(self):
+        sc = _full_scorecard(tie_breaker="Bull and bear cases offset; awaiting catalyst.")
+        assert sc.tie_breaker is not None
+
+
+@pytest.mark.unit
+class TestRenderResearchPlanWithScorecard:
+    def test_rendered_plan_includes_scorecard_section(self):
+        plan = ResearchPlan(
+            recommendation=PortfolioRating.OVERWEIGHT,
+            rationale="r",
+            strategic_actions="s",
+            scorecard=_full_scorecard(),
+        )
+        md = render_research_plan(plan)
+        assert "**Scorecard**" in md
+        assert "Bull Case: +2" in md
+        assert "Bear Case: -1" in md
+        assert "Confidence: High" in md
+        assert "Invalidating Evidence" in md
+
+    def test_rendered_plan_omits_scorecard_when_absent(self):
+        plan = ResearchPlan(
+            recommendation=PortfolioRating.HOLD,
+            rationale="r",
+            strategic_actions="s",
+        )
+        md = render_research_plan(plan)
+        assert "Scorecard" not in md
+
+    def test_hold_with_tie_breaker_renders_tie_breaker_line(self):
+        plan = ResearchPlan(
+            recommendation=PortfolioRating.HOLD,
+            rationale="r",
+            strategic_actions="s",
+            scorecard=_full_scorecard(
+                bull_case=1,
+                bear_case=-1,
+                tie_breaker="Bull/bear cases evenly weighted; awaiting confirmation.",
+            ),
+        )
+        md = render_research_plan(plan)
+        assert "Tie Breaker" in md
+        assert "evenly weighted" in md
+
+    def test_all_five_ratings_render_with_scorecard(self):
+        for rating in PortfolioRating:
+            plan = ResearchPlan(
+                recommendation=rating,
+                rationale="r",
+                strategic_actions="s",
+                scorecard=_full_scorecard(),
+            )
+            md = render_research_plan(plan)
+            assert f"**Recommendation**: {rating.value}" in md
+            assert "**Scorecard**" in md
+
+
+@pytest.mark.unit
+class TestRenderPMDecisionWithScorecard:
+    def test_rendered_decision_includes_scorecard_section(self):
+        decision = PortfolioDecision(
+            rating=PortfolioRating.BUY,
+            executive_summary="e",
+            investment_thesis="t",
+            scorecard=_full_scorecard(),
+        )
+        md = render_pm_decision(decision)
+        assert "**Scorecard**" in md
+        assert "Confidence: High" in md
+
+    def test_parser_compatibility_rating_line_still_present(self):
+        # SignalProcessor's parser reads "**Rating**: X" — the scorecard
+        # block must not displace or duplicate this line.
+        decision = PortfolioDecision(
+            rating=PortfolioRating.SELL,
+            executive_summary="e",
+            investment_thesis="t",
+            scorecard=_full_scorecard(),
+        )
+        md = render_pm_decision(decision)
+        assert md.count("**Rating**: Sell") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +514,29 @@ class TestResearchManagerAgent:
         assert "Evidence Ledger" in prompt
         assert "Latest close: 200.50" in prompt
 
+    def test_prompt_instructs_scorecard_fill(self):
+        captured = {}
+        llm = _structured_rm_llm(captured)
+        rm = create_research_manager(llm)
+        rm(_make_rm_state())
+        prompt = captured["prompt"]
+        # Each named evidence category must appear in the instructions
+        # so the LLM knows what to score.
+        for category in (
+            "Bull Case",
+            "Bear Case",
+            "Trend",
+            "Fundamental Quality",
+            "Catalyst",
+            "Macro",
+            "Valuation",
+        ):
+            assert category in prompt, f"missing category {category!r} in RM prompt"
+        # Hold requires explicit tie-breaker mention
+        assert "tie" in prompt.lower() and "breaker" in prompt.lower()
+        # Buy/Sell require invalidation
+        assert "invalidat" in prompt.lower()
+
 
 # ---------------------------------------------------------------------------
 # Portfolio Manager: ledger inclusion in prompt
@@ -444,3 +595,22 @@ class TestPortfolioManagerAgent:
         prompt = captured["prompt"]
         assert "Evidence Ledger" in prompt
         assert "Latest close: 200.50" in prompt
+
+    def test_prompt_instructs_scorecard_fill(self):
+        captured = {}
+        llm = _structured_pm_llm(captured)
+        pm = create_portfolio_manager(llm)
+        pm(_make_pm_state())
+        prompt = captured["prompt"]
+        for category in (
+            "Bull Case",
+            "Bear Case",
+            "Trend",
+            "Fundamental Quality",
+            "Catalyst",
+            "Macro",
+            "Valuation",
+        ):
+            assert category in prompt, f"missing category {category!r} in PM prompt"
+        assert "tie" in prompt.lower() and "breaker" in prompt.lower()
+        assert "invalidat" in prompt.lower()

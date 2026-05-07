@@ -55,6 +55,10 @@ Commit to a clear stance whenever the debate's strongest arguments warrant one; 
 
 ---
 
+**Evidence Scorecard** — populate the structured `scorecard` field by scoring each named category on a -2 (strongly bearish) to +2 (strongly bullish) scale, with 0 meaning insufficient or balanced evidence. Categories: Bull Case, Bear Case, Trend / Technical, Fundamental Quality, Liquidity / Risk, Catalyst Clarity, Macro / Regime, Valuation. Set Confidence (Low / Medium / High) and write a one-to-two-sentence `rating_rationale` showing how the scorecard maps to the rating. For Buy / Sell, name the specific evidence in `invalidating_evidence` that would downgrade or upgrade the call. For Hold, the `tie_breaker` field is REQUIRED — explain why the evidence is genuinely balanced rather than indecisive, and what would break the balance.
+
+---
+
 **Debate History:**
 {history}
 
