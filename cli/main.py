@@ -1,4 +1,5 @@
 from typing import Optional
+import contextlib
 import datetime
 import typer
 import questionary
@@ -255,6 +256,13 @@ class MessageBuffer:
 
 
 message_buffer = MessageBuffer()
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    if m:
+        return f"{m}m {s:02d}s"
+    return f"{s}s"
 
 
 def create_layout():
@@ -1758,6 +1766,7 @@ def run_analysis(
     report_name: Optional[str] = None,
     display_report: bool = False,
     open_report: bool = True,
+    quiet: bool = False,
 ):
     # First get all user selections
     selections = get_user_selections(overrides=overrides, interactive=interactive)
@@ -1847,12 +1856,47 @@ def run_analysis(
     message_buffer.add_tool_call = save_tool_call_decorator(message_buffer, "add_tool_call")
     message_buffer.update_report_section = save_report_section_decorator(message_buffer, "update_report_section")
 
-    # Now start the display layout
-    layout = create_layout()
+    # Quiet mode: skip the Live layout entirely and instead emit one
+    # console line per agent status transition. This keeps the run
+    # observable in pipes / log files / non-TTY environments where the
+    # rich layout would just produce noise.
+    if quiet:
+        def quiet_status_decorator(obj, func_name):
+            func = getattr(obj, func_name)
+            @wraps(func)
+            def wrapper(agent, status, *args, **kwargs):
+                prev = obj.agent_status.get(agent)
+                result = func(agent, status, *args, **kwargs)
+                new = obj.agent_status.get(agent)
+                if prev != new and agent in obj.agent_status:
+                    elapsed = _fmt_elapsed(time.time() - start_time)
+                    if new == "in_progress":
+                        console.print(f"[cyan]▶[/cyan] {agent} [dim]({elapsed})[/dim]")
+                    elif new == "completed":
+                        console.print(f"[green]✓[/green] {agent} [dim]({elapsed})[/dim]")
+                return result
+            return wrapper
+        message_buffer.update_agent_status = quiet_status_decorator(
+            message_buffer, "update_agent_status"
+        )
 
-    with Live(layout, refresh_per_second=4) as live:
+    # Now start the display layout (skipped entirely in quiet mode)
+    layout = None if quiet else create_layout()
+
+    def _refresh(spinner_text=None):
+        if not quiet:
+            update_display(
+                layout,
+                spinner_text,
+                stats_handler=stats_handler,
+                start_time=start_time,
+            )
+
+    live_cm = contextlib.nullcontext() if quiet else Live(layout, refresh_per_second=4)
+
+    with live_cm:
         # Initial display
-        update_display(layout, stats_handler=stats_handler, start_time=start_time)
+        _refresh()
 
         # Add initial messages
         message_buffer.add_message("System", f"Selected ticker: {selections['ticker']}")
@@ -1863,18 +1907,18 @@ def run_analysis(
             "System",
             f"Selected analysts: {', '.join(analyst.value for analyst in selections['analysts'])}",
         )
-        update_display(layout, stats_handler=stats_handler, start_time=start_time)
+        _refresh()
 
         # Update agent status to in_progress for the first analyst
         first_analyst = f"{selections['analysts'][0].value.capitalize()} Analyst"
         message_buffer.update_agent_status(first_analyst, "in_progress")
-        update_display(layout, stats_handler=stats_handler, start_time=start_time)
+        _refresh()
 
         # Create spinner text
         spinner_text = (
             f"Analyzing {selections['ticker']} on {selections['analysis_date']}..."
         )
-        update_display(layout, spinner_text, stats_handler=stats_handler, start_time=start_time)
+        _refresh(spinner_text)
 
         # Initialize state and get graph args with callbacks
         init_agent_state = graph.propagator.create_initial_state(
@@ -1981,7 +2025,7 @@ def run_analysis(
                         message_buffer.update_agent_status("Portfolio Manager", "completed")
 
             # Update the display
-            update_display(layout, stats_handler=stats_handler, start_time=start_time)
+            _refresh()
 
             trace.append(chunk)
 
@@ -2005,7 +2049,7 @@ def run_analysis(
             if section in final_state:
                 message_buffer.update_report_section(section, final_state[section])
 
-        update_display(layout, stats_handler=stats_handler, start_time=start_time)
+        _refresh()
 
     # Post-analysis actions (outside Live context for clean output)
     console.print("\n[bold cyan]Analysis Complete![/bold cyan]\n")
@@ -2128,6 +2172,12 @@ def analyze(
         False, "--skip-open-report",
         help="Do not auto-launch the saved report in the default OS viewer.",
     ),
+    quiet: bool = typer.Option(
+        False, "--quiet", "-q",
+        help="Disable the live TUI and print one minimal line per agent transition. "
+             "Useful in pipes, CI logs, or non-TTY environments where the live "
+             "layout would otherwise be unreadable.",
+    ),
     profile: Optional[str] = typer.Option(
         None, "--profile",
         help=f"Named bundle of flag values: {', '.join(PROFILES)}. "
@@ -2203,6 +2253,7 @@ def analyze(
         report_name=report_name,
         display_report=display_report,
         open_report=not skip_open_report,
+        quiet=quiet,
     )
 
 
