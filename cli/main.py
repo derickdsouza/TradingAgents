@@ -2175,6 +2175,7 @@ def analyze(
     quiet: bool = typer.Option(
         False, "--quiet", "-q",
         help="Disable the live TUI and print one minimal line per agent transition. "
+             "Also implies --skip-open-report (no PDF/MD pop-up at the end). "
              "Useful in pipes, CI logs, or non-TTY environments where the live "
              "layout would otherwise be unreadable.",
     ),
@@ -2252,7 +2253,7 @@ def analyze(
         save_report=not skip_save_report,
         report_name=report_name,
         display_report=display_report,
-        open_report=not skip_open_report,
+        open_report=(not skip_open_report) and not quiet,
         quiet=quiet,
     )
 
