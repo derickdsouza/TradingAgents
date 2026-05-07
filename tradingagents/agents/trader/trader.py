@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import functools
+import re
+from typing import Optional
 
 from langchain_core.messages import AIMessage
 
@@ -12,10 +14,36 @@ from tradingagents.agents.utils.agent_utils import (
     get_horizon_instruction,
     get_language_instruction,
 )
+from tradingagents.agents.utils.decision_contracts import (
+    TraderValidationContext,
+    render_validation_notes,
+    validate_trader_proposal,
+)
 from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
+
+
+def _parse_latest_close(key_levels: str) -> Optional[float]:
+    """Extract the deterministic ``Latest close: <n>`` value from key_levels.
+
+    The Key Price Levels block is the agent's reference price source. The
+    same regex shape is used by the report renderer in ``cli/main.py``;
+    keeping it duplicated rather than importing avoids a CLI ↔ agents
+    cycle. Returns ``None`` when the block is absent or unparseable —
+    the validator treats that as "no directional check possible" rather
+    than failing.
+    """
+    if not key_levels:
+        return None
+    match = re.search(r"Latest close:\s*([0-9][0-9.,]*)", key_levels)
+    if not match:
+        return None
+    try:
+        return float(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
 
 
 def create_trader(llm):
@@ -81,11 +109,21 @@ def create_trader(llm):
             },
         ]
 
+        validation_context = TraderValidationContext(
+            latest_close=_parse_latest_close(key_levels),
+        )
+
+        def _validated_render(proposal: TraderProposal) -> str:
+            validated = validate_trader_proposal(proposal, validation_context)
+            md = render_trader_proposal(validated.proposal)
+            footer = render_validation_notes(validated.notes)
+            return f"{md}\n\n{footer}" if footer else md
+
         trader_plan = invoke_structured_or_freetext(
             structured_llm,
             llm,
             messages,
-            render_trader_proposal,
+            _validated_render,
             "Trader",
         )
 

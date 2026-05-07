@@ -191,6 +191,55 @@ class TestTraderAgent:
         result = trader(_make_trader_state())
         assert result["trader_investment_plan"] == plain_response
 
+    def test_invalid_long_trailing_stop_is_dropped_with_validation_note(self):
+        # Reproduces the TRIVENI-style failure: a Hold proposal with a
+        # trailing stop above current price (a target masquerading as a
+        # stop). The validator should drop the bad row and append a note
+        # rather than render the misleading line verbatim.
+        captured = {}
+        proposal = TraderProposal(
+            action=TraderAction.HOLD,
+            reasoning="Letting the breakout confirm before adding.",
+            stop_trailing=435.0,
+            stop_trailing_basis="20-day high — breakout confirmation level",
+        )
+        llm = _structured_trader_llm(captured, proposal)
+        state = {
+            "company_of_interest": "TRIVENI.NS",
+            "investment_plan": "**Recommendation**: Hold\n**Rationale**: ...\n**Strategic Actions**: ...",
+            "key_levels": "Latest close: 403.40\n50-DMA: 395.00",
+        }
+        trader = create_trader(llm)
+        result = trader(state)
+        plan = result["trader_investment_plan"]
+        assert "**Trailing Stop**: 435.0" not in plan
+        assert "**Validation Notes**" in plan
+        assert "435" in plan and "Trailing Stop" in plan
+
+    def test_valid_long_proposal_renders_without_validation_notes(self):
+        # When latest_close is known and stops are correctly placed the
+        # validator must be a no-op — no Validation Notes footer.
+        captured = {}
+        proposal = TraderProposal(
+            action=TraderAction.BUY,
+            reasoning="VCP breakout off the 50-DMA.",
+            entry_price=190.0,
+            entry_basis="50-DMA",
+            stop_initial=175.0,
+            stop_initial_basis="just below 20-day low",
+        )
+        llm = _structured_trader_llm(captured, proposal)
+        state = {
+            "company_of_interest": "NVDA",
+            "investment_plan": "**Recommendation**: Buy\n**Rationale**: ...\n**Strategic Actions**: ...",
+            "key_levels": "Latest close: 200.00\n50-DMA: 190.00",
+        }
+        trader = create_trader(llm)
+        result = trader(state)
+        plan = result["trader_investment_plan"]
+        assert "**Initial Stop**: 175.0" in plan
+        assert "**Validation Notes**" not in plan
+
 
 # ---------------------------------------------------------------------------
 # Research Manager agent: structured happy path + fallback
