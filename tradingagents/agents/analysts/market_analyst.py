@@ -7,6 +7,7 @@ from tradingagents.agents.utils.agent_utils import (
 )
 from tradingagents.agents.utils.evidence_ledger import build_initial_ledger
 from tradingagents.agents.utils.market_levels import compute_key_levels
+from tradingagents.agents.utils.prompt_overlays import narrator_suppression_overlay
 from tradingagents.agents.utils.technical_indicators_tools import get_fno_oi
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.india_regime import compute_market_regime
@@ -105,7 +106,7 @@ For SHORT-HORIZON / SWING setups specifically: prioritise the institutional-volu
                 "call-heavy/bullish-positioned, > 1.3 is put-heavy."
             ) if is_indian_ticker(ticker) else "")
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
-            + " When you have all the data you need and are producing the final report, begin your response directly with the report content (e.g. a heading or the first analytical paragraph). Do NOT preface the report with sentences like 'Now I have all the data needed.' or 'Let me compile the analysis.' — those narrator-style intros are saved verbatim into the report file."
+            + narrator_suppression_overlay()
             + get_language_instruction()
         )
 

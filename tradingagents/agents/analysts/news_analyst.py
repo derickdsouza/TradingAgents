@@ -11,6 +11,10 @@ from tradingagents.agents.utils.news_data_tools import (
     get_corporate_announcements,
     get_india_macro,
 )
+from tradingagents.agents.utils.prompt_overlays import (
+    india_news_overlay,
+    narrator_suppression_overlay,
+)
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.nse_client import is_indian_ticker
 
@@ -30,22 +34,12 @@ def create_news_analyst(llm):
             tools.append(get_india_macro)
 
         lookback_phrase = get_horizon()["lookback_phrase"]
-        india_clause = (
-            " For this Indian ticker, also call get_corporate_announcements(ticker, look_back_days)"
-            " — this surfaces NSE-filed catalysts (board meetings, results, dividends,"
-            " promoter pledge changes, insider trades under SEBI Reg 7(2), bulk/block deals)"
-            " that are not in Yahoo news but routinely move Indian stocks. Also call"
-            " get_india_macro() — INR/USD, Brent, Nifty levels, India VIX, and today's"
-            " FII vs DII cash-market net flow. Indian equities move heavily on these"
-            " numeric drivers and they're not visible in headline news."
-            if is_indian_ticker(ticker) else ""
-        )
         system_message = (
             f"You are a news researcher tasked with analyzing recent news and trends over {lookback_phrase}. Please write a comprehensive report of the current state of the world that is relevant for trading and macroeconomics. Use the available tools: get_news(ticker, start_date, end_date) for company-specific news, and get_global_news(curr_date, look_back_days, limit, ticker) for broader macroeconomic news. Always pass the ticker under analysis to get_global_news — for Indian tickers (.NS/.BO) this switches the macro query set to RBI/CPI/FII-DII/INR-oil, which is what actually moves Indian markets."
-            + india_clause
+            + india_news_overlay(ticker)
             + " Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
-            + " When you have all the data you need and are producing the final report, begin your response directly with the report content (e.g. a heading or the first analytical paragraph). Do NOT preface the report with sentences like 'Now I have all the data needed.' or 'Let me compile the analysis.' — those narrator-style intros are saved verbatim into the report file."
+            + narrator_suppression_overlay()
             + get_analyst_horizon_instruction()
             + get_language_instruction()
         )
