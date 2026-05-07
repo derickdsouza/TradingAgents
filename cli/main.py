@@ -1,6 +1,9 @@
 from typing import Optional
 import contextlib
 import datetime
+import re
+import statistics
+from collections import Counter
 import typer
 import questionary
 from pathlib import Path
@@ -1558,6 +1561,133 @@ def save_report_to_disk(final_state, ticker: str, save_path: Path):
     return md_path
 
 
+_ENSEMBLE_FIELDS = {
+    # field_name: (regex, source_file_relative_to_run_dir, cast)
+    "rating":         (r"\*\*Rating\*\*:\s*([^\n]+)",                 "5_portfolio/decision.md", str),
+    "price_target":   (r"\*\*Price Target\*\*:\s*([0-9.]+)",          "5_portfolio/decision.md", float),
+    "time_horizon":   (r"\*\*Time Horizon\*\*:\s*([^\n]+)",           "5_portfolio/decision.md", str),
+    "action":         (r"\*\*Action\*\*:\s*([^\n]+)",                 "3_trading/trader.md",      str),
+    "entry_price":    (r"\*\*Entry Price\*\*:\s*([0-9.]+)",           "3_trading/trader.md",      float),
+    "initial_stop":   (r"\*\*Initial Stop\*\*:\s*([0-9.]+)",          "3_trading/trader.md",      float),
+    "trailing_stop":  (r"\*\*Trailing Stop\*\*:\s*([0-9.]+)",         "3_trading/trader.md",      float),
+    "final_proposal": (r"FINAL TRANSACTION PROPOSAL:\s*\*\*([A-Z]+)\*\*", "3_trading/trader.md",  str),
+}
+
+
+def _parse_run_outputs(run_dir: Path) -> dict:
+    """Extract structured fields (rating, entry, target, stop, ...) from a run folder.
+
+    Reads only 5_portfolio/decision.md and 3_trading/trader.md. Missing or
+    unparseable fields land as None — the ensemble summary tolerates gaps.
+    """
+    out: dict = {"run_dir": str(run_dir)}
+    cache: dict[str, str] = {}
+    for field, (pattern, rel, cast) in _ENSEMBLE_FIELDS.items():
+        if rel not in cache:
+            p = run_dir / rel
+            cache[rel] = p.read_text(encoding="utf-8") if p.exists() else ""
+        m = re.search(pattern, cache[rel])
+        if not m:
+            out[field] = None
+            continue
+        try:
+            out[field] = cast(m.group(1).strip())
+        except Exception:
+            out[field] = None
+    return out
+
+
+def _write_ensemble_summary(ensemble_dir: Path, ticker: str, runs: list[dict]) -> Path:
+    """Write a markdown summary across N runs: per-run table + aggregate stats."""
+
+    def num_stats(values):
+        vs = [v for v in values if isinstance(v, (int, float))]
+        if not vs:
+            return None
+        return {
+            "n": len(vs),
+            "min": min(vs), "max": max(vs),
+            "median": statistics.median(vs),
+            "mean": statistics.mean(vs),
+            "stdev": statistics.stdev(vs) if len(vs) > 1 else 0.0,
+        }
+
+    def histogram(values):
+        return Counter(v for v in values if v).most_common()
+
+    def fmt_stats(s):
+        if not s:
+            return "(no data)"
+        spread_pct = (s["max"] - s["min"]) / s["median"] * 100 if s["median"] else 0
+        return (
+            f"n={s['n']}, median={s['median']:.2f}, mean={s['mean']:.2f}, "
+            f"range=[{s['min']:.2f}–{s['max']:.2f}] ({spread_pct:.1f}% spread), σ={s['stdev']:.2f}"
+        )
+
+    def fmt_hist(h):
+        if not h:
+            return "(none)"
+        return ", ".join(f"`{label}` ×{count}" for label, count in h)
+
+    entry = num_stats([r.get("entry_price") for r in runs])
+    target = num_stats([r.get("price_target") for r in runs])
+    init_stop = num_stats([r.get("initial_stop") for r in runs])
+
+    ratings = histogram(r.get("rating") for r in runs)
+    actions = histogram(r.get("action") for r in runs)
+    proposals = histogram(r.get("final_proposal") for r in runs)
+    horizons = histogram(r.get("time_horizon") for r in runs)
+
+    lines: list[str] = []
+    lines.append(f"# Ensemble Summary: {ticker}")
+    lines.append("")
+    lines.append(f"- Runs: **{len(runs)}**")
+    lines.append(f"- Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("")
+
+    lines.append("## Per-run results")
+    lines.append("")
+    lines.append("| # | Rating | Action | Entry | Target | Init Stop | Horizon | Folder |")
+    lines.append("|---|---|---|---|---|---|---|---|")
+    for i, r in enumerate(runs, 1):
+        def cell(v):
+            if v is None:
+                return "—"
+            if isinstance(v, float):
+                return f"{v:.2f}"
+            return str(v).strip()
+        folder_name = Path(r.get("run_dir", "")).name or "—"
+        lines.append(
+            f"| {i} | {cell(r.get('rating'))} | {cell(r.get('action'))} | "
+            f"{cell(r.get('entry_price'))} | {cell(r.get('price_target'))} | "
+            f"{cell(r.get('initial_stop'))} | {cell(r.get('time_horizon'))} | "
+            f"`{folder_name}` |"
+        )
+
+    lines.extend([
+        "",
+        "## Aggregate statistics (numeric fields)",
+        "",
+        f"- **Entry price**: {fmt_stats(entry)}",
+        f"- **Price target**: {fmt_stats(target)}",
+        f"- **Initial stop**: {fmt_stats(init_stop)}",
+        "",
+        "## Distributions (categorical fields)",
+        "",
+        f"- **PM rating**: {fmt_hist(ratings)}",
+        f"- **Trader action**: {fmt_hist(actions)}",
+        f"- **Final proposal**: {fmt_hist(proposals)}",
+        f"- **Time horizon**: {fmt_hist(horizons)}",
+        "",
+        "_Read the cluster, not any single run. Median ± σ is more robust than any one number._",
+        "",
+    ])
+
+    out = ensemble_dir / "ensemble_summary.md"
+    out.write_text("\n".join(lines), encoding="utf-8")
+    return out
+
+
 def display_complete_report(final_state):
     """Display the complete analysis report sequentially (avoids truncation)."""
     console.print()
@@ -2179,6 +2309,15 @@ def analyze(
              "Useful in pipes, CI logs, or non-TTY environments where the live "
              "layout would otherwise be unreadable.",
     ),
+    runs: int = typer.Option(
+        1, "--runs", "-n",
+        min=1,
+        help="Run the analysis N times and write an ensemble summary "
+             "(median entry/target, range, rating distribution). "
+             "Each run lands in <reports>/<ticker>/<ts>_ensemble/run_<i>/ "
+             "with a single ensemble_summary.md alongside. Read the cluster, "
+             "not any individual run — variance is information.",
+    ),
     profile: Optional[str] = typer.Option(
         None, "--profile", "-p",
         help=f"Named bundle of flag values: {', '.join(PROFILES)}. "
@@ -2246,16 +2385,57 @@ def analyze(
         "trading_horizon": horizon_key,
     }
 
-    run_analysis(
-        checkpoint=checkpoint,
-        overrides=overrides,
-        interactive=interactive,
-        save_report=not skip_save_report,
-        report_name=report_name,
-        display_report=display_report,
-        open_report=(not skip_open_report) and not quiet,
-        quiet=quiet,
+    if runs == 1:
+        run_analysis(
+            checkpoint=checkpoint,
+            overrides=overrides,
+            interactive=interactive,
+            save_report=not skip_save_report,
+            report_name=report_name,
+            display_report=display_report,
+            open_report=(not skip_open_report) and not quiet,
+            quiet=quiet,
+        )
+        return
+
+    # Ensemble mode: loop the analysis N times, collect the structured
+    # decisions, and write a single summary alongside the per-run folders.
+    # Pin analysis_date so every run uses the same data window — otherwise
+    # cross-run drift confounds the variance we're trying to measure.
+    if interactive:
+        raise typer.BadParameter("--runs > 1 is not supported with -i/--interactive (would prompt N times).")
+    if skip_save_report:
+        raise typer.BadParameter("--runs > 1 requires saved reports (the summary parses them).")
+
+    ensemble_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    ensemble_subpath = f"{ensemble_ts}_ensemble"
+    ensemble_dir = Path(DEFAULT_CONFIG["reports_dir"]) / ticker / ensemble_subpath
+    ensemble_dir.mkdir(parents=True, exist_ok=True)
+
+    console.print(
+        f"[bold cyan]Ensemble mode:[/bold cyan] {runs} runs of [bold]{ticker}[/bold] "
+        f"(analysis_date={overrides['analysis_date']}) → [dim]{ensemble_dir}[/dim]"
     )
+
+    parsed_runs: list[dict] = []
+    for i in range(1, runs + 1):
+        console.print(f"\n[bold]── Run {i}/{runs} ──[/bold]")
+        run_subpath = f"{ensemble_subpath}/run_{i}"
+        run_analysis(
+            checkpoint=checkpoint,
+            overrides=overrides,
+            interactive=False,
+            save_report=True,
+            report_name=run_subpath,
+            display_report=False,
+            open_report=False,
+            quiet=quiet,
+        )
+        run_dir = Path(DEFAULT_CONFIG["reports_dir"]) / ticker / run_subpath
+        parsed_runs.append(_parse_run_outputs(run_dir))
+
+    summary_path = _write_ensemble_summary(ensemble_dir, ticker, parsed_runs)
+    console.print(f"\n[green]✓ Ensemble summary:[/green] {summary_path.resolve()}")
 
 
 if __name__ == "__main__":
