@@ -2,6 +2,46 @@
 
 This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 
+## Fork architecture (rebase-safe)
+
+This repository is a personal fork of [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents),
+maintained as a stack of focused commits on `local-patches` rebased
+periodically onto `upstream/main`.
+
+When adding new behavior, **prefer fork-owned seams over edits to
+upstream-owned modules**. Edits inside a seam don't conflict on rebase; edits
+inside upstream code do. Named seams:
+
+- **Decision contract validators** — enforce semantic trading invariants on
+  Trader/Portfolio Manager structured output (e.g. stop below entry on a
+  long Hold).
+- **Evidence ledger** — compact structured facts threaded through agent
+  state alongside prose reports.
+- **Prompt overlays** — fork-specific prompt fragments layered onto
+  upstream prompt scaffolds.
+- **Manager scorecards** — explicit, weighted reasoning for Research
+  Manager and Portfolio Manager.
+- **Outcome memory policy** — horizon- and region-aware reflection.
+- **Evaluation harness** — regression tests over report-quality
+  invariants and decision contracts.
+- **Vendor routing** and **report renderers** — already in place; add
+  region-specific data or output-shape logic there rather than in
+  upstream prompt files.
+
+Edit upstream-owned files directly only when the change is genuinely
+upstream-shaped, no seam covers it, and the intent fits a one-paragraph
+commit body. Otherwise prefer a 1–3 line hook from upstream into a
+fork-owned module.
+
+The canonical strategy, decision rules, and per-seam paths live in
+`CLAUDE.md` (tracked on the `meta` branch — restore with
+`git checkout meta -- CLAUDE.md` if missing).
+
+After any change, run `./tradingagents/bin/python -m pytest -q` before
+declaring the work done. Mirror any edited `tradingagents/<path>.py`
+into the venv site-packages copy first, or pytest exercises the stale
+install.
+
 ## Quick Reference
 
 ```bash
