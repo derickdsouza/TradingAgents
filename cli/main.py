@@ -1069,6 +1069,12 @@ th {
   border: 0;
   letter-spacing: 0.02em;
 }
+/* Markdown writers wrap header cells in `**...**`, which becomes
+   `<th><strong>...</strong></th>`. The global `strong` rule sets a
+   dark color, which would otherwise paint dark text on the dark th
+   background. Force inline emphasis inside th/thead to inherit the
+   th color (white) so headers stay legible. */
+th strong, th em, thead strong, thead em { color: inherit; }
 td {
   padding: 4pt 8pt;
   border-bottom: 0.5pt solid #e5e7eb;
