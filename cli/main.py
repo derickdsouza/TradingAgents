@@ -2011,13 +2011,18 @@ def run_analysis(
     console.print("\n[bold cyan]Analysis Complete![/bold cyan]\n")
 
     if save_report:
+        # Anchor on the configured reports_dir (default: <project>/reports
+        # via pyproject.toml lookup) rather than Path.cwd(), so runs from
+        # any directory land in the same place. Override with
+        # $TRADINGAGENTS_REPORTS_DIR.
+        reports_root = Path(DEFAULT_CONFIG["reports_dir"])
         if report_name:
             save_path = Path(report_name)
             if not save_path.is_absolute():
-                save_path = Path.cwd() / "reports" / save_path
+                save_path = reports_root / save_path
         else:
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            save_path = Path.cwd() / "reports" / f"{selections['ticker']}_{timestamp}"
+            save_path = reports_root / f"{selections['ticker']}_{timestamp}"
         try:
             report_file = save_report_to_disk(final_state, selections["ticker"], save_path)
             console.print(f"[green]✓ Report saved to:[/green] {report_file.resolve()}")
@@ -2103,11 +2108,13 @@ def analyze(
     ),
     report_name: Optional[str] = typer.Option(
         None, "--report-name",
-        help="Override generated report folder name. Relative paths land under ./reports/.",
+        help="Override generated report folder name. Relative paths land under "
+             "the configured reports_dir ($TRADINGAGENTS_REPORTS_DIR or "
+             "<project>/reports/ by default).",
     ),
     skip_save_report: bool = typer.Option(
         False, "--skip-save-report",
-        help="Do not save the consolidated report to ./reports/ at the end of the run.",
+        help="Do not save the consolidated report at the end of the run.",
     ),
     display_report: bool = typer.Option(
         False, "--display-report",
