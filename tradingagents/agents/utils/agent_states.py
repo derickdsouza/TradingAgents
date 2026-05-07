@@ -1,6 +1,8 @@
-from typing import Annotated
+from typing import Annotated, Optional
 from typing_extensions import TypedDict
 from langgraph.graph import MessagesState
+
+from tradingagents.agents.utils.evidence_ledger import EvidenceLedger
 
 
 # Researcher team state
@@ -62,6 +64,15 @@ class AgentState(MessagesState):
         "sector index) with trend tags and stock RS — empty for non-Indian "
         "tickers. Computed by the market analyst node and threaded into "
         "RM/Trader/PM prompts.",
+    ]
+    evidence_ledger: Annotated[
+        Optional[EvidenceLedger],
+        "Structured Evidence Ledger — typed surface of decision-critical "
+        "facts (price anchors, regime, source-attributed extras) threaded "
+        "through agent state alongside prose reports. Built deterministically "
+        "by the market analyst node; consumed by RM/Trader/PM as a stable "
+        "fact surface they can cite without inventing provenance. None when "
+        "yfinance is unavailable.",
     ]
     market_report: Annotated[str, "Report from the Market Analyst"]
     sentiment_report: Annotated[str, "Report from the Sentiment Analyst"]
