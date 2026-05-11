@@ -1386,9 +1386,15 @@ def _build_trade_setup_block(
     of what the agent actually wrote) and a footnote flags it.
 
     Returns None if neither side yields any fields (e.g. a free-text fallback
-    that didn't preserve the schema shape).
+    that didn't preserve the schema shape) — and also when *both* Trader and
+    PM outputs are absent entirely (research-only mode, where this block
+    would otherwise emit a misleading 50-DMA fallback as a fake "Entry Price"
+    and a footer pointing at trader/risk/PM sections that never ran).
     """
     import re
+
+    if not (trader_plan and trader_plan.strip()) and not (pm_decision and pm_decision.strip()):
+        return None
 
     def _grab(text: str | None, label: str) -> str | None:
         if not text:
@@ -1512,6 +1518,103 @@ def _build_trade_setup_block(
     )
 
 
+_RESEARCH_SCORECARD_CATEGORIES = (
+    "Bull Case",
+    "Bear Case",
+    "Trend / Technical",
+    "Fundamental Quality",
+    "Liquidity / Risk",
+    "Catalyst Clarity",
+    "Macro / Regime",
+    "Valuation",
+)
+
+
+def _build_research_summary_block(
+    judge_decision: str | None,
+    key_levels: str | None = None,
+) -> str | None:
+    """Render the headline research-stage summary for research-only reports.
+
+    Parses the Research Manager's `render_research_plan` / `render_evidence_scorecard`
+    output (deterministic markdown, see `tradingagents/agents/schemas.py`) and
+    surfaces Recommendation, Confidence, the 8-category scorecard, and a short
+    rationale at the top of the report — the load-bearing artefact of
+    research-only mode, equivalent to the Trade Setup block in full mode.
+
+    Returns None when the manager decision is missing or the parse turns up
+    nothing structured (free-text fallback). In that case the report falls
+    back to the in-body Research Manager section without a header summary.
+    """
+    if not judge_decision or not judge_decision.strip():
+        return None
+
+    import re
+
+    def _grab(label: str) -> str | None:
+        m = re.search(rf"\*\*{re.escape(label)}\*\*:\s*([^\n]+)", judge_decision)
+        return m.group(1).strip() if m else None
+
+    def _grab_list_item(label: str) -> str | None:
+        m = re.search(rf"^-\s*{re.escape(label)}:\s*(.+)$", judge_decision, re.MULTILINE)
+        return m.group(1).strip() if m else None
+
+    current_close: str | None = None
+    if key_levels:
+        m = re.search(r"Latest close:\s*([0-9][0-9.,]*)", key_levels)
+        if m:
+            current_close = m.group(1).strip()
+
+    recommendation = _grab("Recommendation")
+    confidence = _grab_list_item("Confidence")
+    rating_rationale = _grab("Rating Rationale")
+    tie_breaker = _grab("Tie Breaker")
+
+    # Parse each scorecard category. Missing categories are skipped rather
+    # than rendered as "—" so the table stays tight.
+    scorecard_rows = []
+    for category in _RESEARCH_SCORECARD_CATEGORIES:
+        value = _grab_list_item(category)
+        if value is not None:
+            scorecard_rows.append((category, value))
+
+    # If we couldn't extract anything structured, bail — the in-body
+    # Research Manager prose already carries the content.
+    if not recommendation and not scorecard_rows:
+        return None
+
+    header_lines = []
+    if current_close:
+        header_lines.append(f"- **Current Price**: {current_close} — _Latest close from yfinance_")
+    if recommendation:
+        header_lines.append(f"- **Recommendation**: {recommendation}")
+    if confidence:
+        header_lines.append(f"- **Confidence**: {confidence}")
+
+    parts = ["## Research Summary at a Glance"]
+    if header_lines:
+        parts.append("\n".join(header_lines))
+
+    if scorecard_rows:
+        table_lines = ["| Category | Score |", "|---|---|"]
+        table_lines.extend(f"| {cat} | {val} |" for cat, val in scorecard_rows)
+        parts.append("\n".join(table_lines))
+
+    if rating_rationale:
+        parts.append(f"**Rating Rationale**: {rating_rationale}")
+    if tie_breaker:
+        parts.append(f"**Tie Breaker**: {tie_breaker}")
+
+    parts.append(
+        "_Research-only run: pipeline terminated at the Research Manager "
+        "(no trader, risk, or portfolio sections). The full synthesis with "
+        "strategic actions and invalidating evidence is in §II below; "
+        "raw bull/bear transcripts are in `2_research/transcripts/`._"
+    )
+
+    return "\n\n".join(parts)
+
+
 def _build_market_regime_block(market_regime: str | None) -> str | None:
     """Render the deterministic market-regime block for the report header.
 
@@ -1548,6 +1651,16 @@ def save_report_to_disk(final_state, ticker: str, save_path: Path):
     )
     if setup_block:
         sections.append(setup_block)
+    else:
+        # Trader / PM never ran (research-only mode). Surface the Research
+        # Manager's rating + scorecard at the top instead — the load-bearing
+        # artefact of this stage.
+        research_summary = _build_research_summary_block(
+            (final_state.get("investment_debate_state") or {}).get("judge_decision"),
+            final_state.get("key_levels"),
+        )
+        if research_summary:
+            sections.append(research_summary)
 
     regime_block = _build_market_regime_block(final_state.get("market_regime"))
     if regime_block:
