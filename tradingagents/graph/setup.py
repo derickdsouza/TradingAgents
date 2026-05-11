@@ -10,6 +10,9 @@ from tradingagents.agents.utils.agent_states import AgentState
 from .conditional_logic import ConditionalLogic
 
 
+OUTPUT_STAGES = ("research", "full")
+
+
 class GraphSetup:
     """Handles the setup and configuration of the agent graph."""
 
@@ -19,12 +22,25 @@ class GraphSetup:
         deep_thinking_llm: Any,
         tool_nodes: Dict[str, ToolNode],
         conditional_logic: ConditionalLogic,
+        output_stage: str = "full",
     ):
-        """Initialize with required components."""
+        """Initialize with required components.
+
+        ``output_stage`` controls where the workflow terminates:
+        - ``"full"``  → analysts → bull/bear → research manager → trader →
+                        risk debate → portfolio manager → END (default)
+        - ``"research"`` → analysts → bull/bear → research manager → END
+                        (no trader, no risk debate, no PM)
+        """
+        if output_stage not in OUTPUT_STAGES:
+            raise ValueError(
+                f"output_stage must be one of {list(OUTPUT_STAGES)}, got {output_stage!r}"
+            )
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
         self.tool_nodes = tool_nodes
         self.conditional_logic = conditional_logic
+        self.output_stage = output_stage
 
     def setup_graph(
         self, selected_analysts=["market", "social", "news", "fundamentals"]
@@ -78,17 +94,20 @@ class GraphSetup:
             delete_nodes["fundamentals"] = create_msg_delete()
             tool_nodes["fundamentals"] = self.tool_nodes["fundamentals"]
 
-        # Create researcher and manager nodes
+        # Create researcher and manager nodes (always built)
         bull_researcher_node = create_bull_researcher(self.quick_thinking_llm)
         bear_researcher_node = create_bear_researcher(self.quick_thinking_llm)
         research_manager_node = create_research_manager(self.deep_thinking_llm)
-        trader_node = create_trader(self.quick_thinking_llm)
 
-        # Create risk analysis nodes
-        aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
-        neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
-        conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
-        portfolio_manager_node = create_portfolio_manager(self.deep_thinking_llm)
+        # Trader / risk / portfolio nodes are only used by the "full" pipeline.
+        # Skip building them entirely when output_stage="research" — fewer
+        # ToolNodes, no wasted LLM client wiring for nodes that won't fire.
+        if self.output_stage == "full":
+            trader_node = create_trader(self.quick_thinking_llm)
+            aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
+            neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
+            conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
+            portfolio_manager_node = create_portfolio_manager(self.deep_thinking_llm)
 
         # Create workflow
         workflow = StateGraph(AgentState)
@@ -101,15 +120,18 @@ class GraphSetup:
             )
             workflow.add_node(f"tools_{analyst_type}", tool_nodes[analyst_type])
 
-        # Add other nodes
+        # Add researcher + research manager (both stages)
         workflow.add_node("Bull Researcher", bull_researcher_node)
         workflow.add_node("Bear Researcher", bear_researcher_node)
         workflow.add_node("Research Manager", research_manager_node)
-        workflow.add_node("Trader", trader_node)
-        workflow.add_node("Aggressive Analyst", aggressive_analyst)
-        workflow.add_node("Neutral Analyst", neutral_analyst)
-        workflow.add_node("Conservative Analyst", conservative_analyst)
-        workflow.add_node("Portfolio Manager", portfolio_manager_node)
+
+        # Trader / risk / PM only in the full pipeline
+        if self.output_stage == "full":
+            workflow.add_node("Trader", trader_node)
+            workflow.add_node("Aggressive Analyst", aggressive_analyst)
+            workflow.add_node("Neutral Analyst", neutral_analyst)
+            workflow.add_node("Conservative Analyst", conservative_analyst)
+            workflow.add_node("Portfolio Manager", portfolio_manager_node)
 
         # Define edges
         # Start with the first analyst
@@ -154,6 +176,13 @@ class GraphSetup:
                 "Research Manager": "Research Manager",
             },
         )
+        if self.output_stage == "research":
+            # Stop here: Research Manager is the terminal node. Useful for
+            # iterating on the debate / synthesis without paying for the
+            # downstream trader + risk + PM passes.
+            workflow.add_edge("Research Manager", END)
+            return workflow
+
         workflow.add_edge("Research Manager", "Trader")
         workflow.add_edge("Trader", "Aggressive Analyst")
         workflow.add_conditional_edges(

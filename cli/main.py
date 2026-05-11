@@ -68,6 +68,15 @@ PROFILES = {
         "horizon": "swing",
         "depth": "deep",
     },
+    # Research-only: all four analysts feed the bull/bear debate so the
+    # Research Manager has the richest possible inputs to synthesize from.
+    # Pipeline terminates at the Research Manager (no trader / risk / PM).
+    "research": {
+        "analysts": "market,social,news,fundamentals",
+        "horizon": "swing",
+        "depth": "deep",
+        "research_only": True,
+    },
 }
 
 
@@ -1985,6 +1994,7 @@ def run_analysis(
     display_report: bool = False,
     open_report: bool = True,
     quiet: bool = False,
+    research_only: bool = False,
 ):
     # First get all user selections
     selections = get_user_selections(overrides=overrides, interactive=interactive)
@@ -2013,11 +2023,13 @@ def run_analysis(
     selected_analyst_keys = [a for a in ANALYST_ORDER if a in selected_set]
 
     # Initialize the graph with callbacks bound to LLMs
+    output_stage = "research" if research_only else "full"
     graph = TradingAgentsGraph(
         selected_analyst_keys,
         config=config,
         debug=True,
         callbacks=[stats_handler],
+        output_stage=output_stage,
     )
 
     # Initialize message buffer with selected analysts
@@ -2249,12 +2261,17 @@ def run_analysis(
 
         # Streamed chunks are per-node deltas, not full state. Merge them
         # so every report field populated across the run is present.
+        # In research-only mode there is no final trade decision — skip
+        # signal processing.
         final_state = {}
         for chunk in trace:
             final_state.update(chunk)
-        decision = graph.process_signal(final_state["final_trade_decision"])
+        if not research_only:
+            decision = graph.process_signal(final_state["final_trade_decision"])
 
-        # Update all agent statuses to completed
+        # Update all agent statuses to completed (research-only never
+        # populated trader / risk / PM entries in agent_status, so this
+        # loop is a no-op for them).
         for agent in message_buffer.agent_status:
             message_buffer.update_agent_status(agent, "completed")
 
@@ -2411,6 +2428,13 @@ def analyze(
         help=f"Named bundle of flag values: {', '.join(PROFILES)}. "
              "Explicit flags override profile values.",
     ),
+    research_only: bool = typer.Option(
+        False, "--research-only",
+        help="Stop the pipeline at the Research Manager: analysts → bull/bear "
+             "debate → research manager → END. No trader, risk debate, or "
+             "portfolio manager. Useful for iterating on the debate / synthesis "
+             "without paying for the downstream passes.",
+    ),
 ):
     if clear_checkpoints:
         from tradingagents.graph.checkpointer import clear_all_checkpoints
@@ -2430,6 +2454,10 @@ def analyze(
             horizon = bundle["horizon"]
         if depth == DEFAULTS["depth"] and "depth" in bundle:
             depth = bundle["depth"]
+        # research_only is a flag — profile turns it on unless the user
+        # explicitly passed --research-only at the CLI (already True).
+        if bundle.get("research_only") and not research_only:
+            research_only = True
         console.print(f"[dim]Profile:[/dim] [bold]{profile_key}[/bold]")
 
     depth_key = depth.lower()
@@ -2483,6 +2511,7 @@ def analyze(
             display_report=display_report,
             open_report=(not skip_open_report) and not quiet,
             quiet=quiet,
+            research_only=research_only,
         )
         return
 
@@ -2494,6 +2523,11 @@ def analyze(
         raise typer.BadParameter("--runs > 1 is not supported with -i/--interactive (would prompt N times).")
     if skip_save_report:
         raise typer.BadParameter("--runs > 1 requires saved reports (the summary parses them).")
+    if research_only:
+        # The ensemble summary parses trader / PM output for variance —
+        # research-only runs do not produce those, so the summary would be
+        # empty. Run --research-only one at a time.
+        raise typer.BadParameter("--runs > 1 is not supported with --research-only (no final decision to summarize).")
 
     ensemble_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     ensemble_subpath = f"{ensemble_ts}_ensemble"

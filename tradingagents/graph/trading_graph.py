@@ -57,6 +57,7 @@ class TradingAgentsGraph:
         debug=False,
         config: Dict[str, Any] = None,
         callbacks: Optional[List] = None,
+        output_stage: str = "full",
     ):
         """Initialize the trading agents graph and components.
 
@@ -65,10 +66,18 @@ class TradingAgentsGraph:
             debug: Whether to run in debug mode
             config: Configuration dictionary. If None, uses default config
             callbacks: Optional list of callback handlers (e.g., for tracking LLM/tool stats)
+            output_stage: Where the pipeline terminates. ``"full"`` runs the
+                whole graph through Portfolio Manager (default). ``"research"``
+                stops at Research Manager — useful for iterating on the bull /
+                bear debate and the manager's synthesis without paying for
+                the downstream trader + risk + PM passes. Memory logging and
+                signal processing are skipped in research mode since there
+                is no final trade decision to log or parse.
         """
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
         self.callbacks = callbacks or []
+        self.output_stage = output_stage
 
         # Update the interface's config
         set_config(self.config)
@@ -115,6 +124,7 @@ class TradingAgentsGraph:
             self.deep_thinking_llm,
             self.tool_nodes,
             self.conditional_logic,
+            output_stage=self.output_stage,
         )
 
         self.propagator = Propagator(
@@ -392,6 +402,16 @@ class TradingAgentsGraph:
         # Log state to disk.
         self._log_state(trade_date, final_state)
 
+        # Research-only runs stop at Research Manager — there is no final
+        # trade decision to log to memory or to feed through signal
+        # processing. Return early with the research-stage state.
+        if self.output_stage == "research":
+            if self.config.get("checkpoint_enabled"):
+                clear_checkpoint(
+                    self.config["data_cache_dir"], company_name, str(trade_date)
+                )
+            return final_state, None
+
         # Store decision for deferred reflection on the next same-ticker run.
         self.memory_log.store_decision(
             ticker=company_name,
@@ -408,14 +428,19 @@ class TradingAgentsGraph:
         return final_state, self.process_signal(final_state["final_trade_decision"])
 
     def _log_state(self, trade_date, final_state):
-        """Log the final state to a JSON file."""
-        self.log_states_dict[str(trade_date)] = {
+        """Log the final state to a JSON file.
+
+        Trader / risk / PM sections are written only when the corresponding
+        nodes actually ran. In ``output_stage="research"`` they are absent
+        from ``final_state``, so we skip them rather than crash on KeyError.
+        """
+        log_entry = {
             "company_of_interest": final_state["company_of_interest"],
             "trade_date": final_state["trade_date"],
-            "market_report": final_state["market_report"],
-            "sentiment_report": final_state["sentiment_report"],
-            "news_report": final_state["news_report"],
-            "fundamentals_report": final_state["fundamentals_report"],
+            "market_report": final_state.get("market_report", ""),
+            "sentiment_report": final_state.get("sentiment_report", ""),
+            "news_report": final_state.get("news_report", ""),
+            "fundamentals_report": final_state.get("fundamentals_report", ""),
             "investment_debate_state": {
                 "bull_history": final_state["investment_debate_state"]["bull_history"],
                 "bear_history": final_state["investment_debate_state"]["bear_history"],
@@ -427,17 +452,21 @@ class TradingAgentsGraph:
                     "judge_decision"
                 ],
             },
-            "trader_investment_decision": final_state["trader_investment_plan"],
-            "risk_debate_state": {
+            "investment_plan": final_state.get("investment_plan", ""),
+        }
+
+        if self.output_stage == "full":
+            log_entry["trader_investment_decision"] = final_state["trader_investment_plan"]
+            log_entry["risk_debate_state"] = {
                 "aggressive_history": final_state["risk_debate_state"]["aggressive_history"],
                 "conservative_history": final_state["risk_debate_state"]["conservative_history"],
                 "neutral_history": final_state["risk_debate_state"]["neutral_history"],
                 "history": final_state["risk_debate_state"]["history"],
                 "judge_decision": final_state["risk_debate_state"]["judge_decision"],
-            },
-            "investment_plan": final_state["investment_plan"],
-            "final_trade_decision": final_state["final_trade_decision"],
-        }
+            }
+            log_entry["final_trade_decision"] = final_state["final_trade_decision"]
+
+        self.log_states_dict[str(trade_date)] = log_entry
 
         # Save to file. Reject ticker values that would escape the
         # results directory when joined as a path component.
