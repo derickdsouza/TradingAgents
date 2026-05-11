@@ -466,6 +466,15 @@ class PortfolioDecision(BaseModel):
             "set so the reader sees what the number means."
         ),
     )
+    target_currency: Optional[str] = Field(
+        default=None,
+        description=(
+            "Currency of the horizon target. Optional ISO-4217 (USD, INR, "
+            "GBP, HKD, CAD, AUD, JPY, EUR, ...). Default-derived from the "
+            "ticker suffix when None. The validator rejects the target when "
+            "this currency does not match the currency of the latest close."
+        ),
+    )
     time_horizon: Optional[str] = Field(
         default=None,
         description="Optional recommended holding period, e.g. '3-6 months'.",
@@ -502,13 +511,23 @@ class PortfolioDecision(BaseModel):
         return data
 
 
-def render_pm_decision(decision: PortfolioDecision) -> str:
+def render_pm_decision(
+    decision: PortfolioDecision,
+    latest_close: Optional[float] = None,
+) -> str:
     """Render a PortfolioDecision back to the markdown shape the rest of the system expects.
 
     Memory log, CLI display, and saved report files all read this markdown,
     so the rendered output preserves the exact section headers (``**Rating**``,
     ``**Executive Summary**``, ``**Investment Thesis**``) that downstream
     parsers and the report writers already handle.
+
+    Slice 2: when ``latest_close`` is supplied alongside a
+    ``price_target_horizon``, an ``**Expected Return**`` line is emitted
+    directly below the dual target lines as a signed percentage rounded
+    to one decimal. This gives the reader and the evaluation harness the
+    directional check in plain text without recomputing it from the
+    target and close numbers.
     """
     parts = [
         f"**Rating**: {decision.rating.value}",
@@ -522,9 +541,9 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
         # legacy ``Price Target`` and the new ``Horizon Target`` labels so
         # existing CLI parsers (cli/main.py `_build_trade_setup_block`,
         # `_ENSEMBLE_FIELDS["price_target"]`) keep matching while readers
-        # learn the new label. REMOVE the legacy line once Slice 2 ships
-        # OR 4 weeks pass, whichever first. Both labels read from the
-        # single source of truth ``price_target_horizon``.
+        # learn the new label. REMOVE the legacy line once Slice 3 ships
+        # OR 4 weeks pass (deadline ~2026-06-08), whichever first. Both
+        # labels read from the single source of truth ``price_target_horizon``.
         target = decision.price_target_horizon
         target_line = f"**Price Target**: {target}"
         horizon_line = f"**Horizon Target**: {target}"
@@ -532,6 +551,10 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
             target_line += f" — _{decision.target_basis}_"
             horizon_line += f" — _{decision.target_basis}_"
         parts.extend(["", target_line, "", horizon_line])
+        if latest_close is not None and latest_close > 0:
+            pct = (target - latest_close) / latest_close * 100.0
+            sign = "+" if pct >= 0 else ""
+            parts.extend(["", f"**Expected Return**: {sign}{pct:.1f}%"])
     if decision.time_horizon:
         parts.extend(["", f"**Time Horizon**: {decision.time_horizon}"])
     if decision.scorecard is not None:

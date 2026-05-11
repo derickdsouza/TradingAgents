@@ -536,10 +536,15 @@ _PM_TRADE_DATE = datetime(2026, 5, 11)
 
 
 def _pm_ctx(latest_close: float | None = 100.0, *, fresh: bool = True) -> PortfolioValidationContext:
+    # Slice 2: provide annualised_volatility so the Hold band is
+    # calibrated and the HOLD_BAND_UNCALIBRATED note doesn't fire on
+    # otherwise-clean fixtures. 0.20 vol → 0.5*0.20 = 0.10 band, matching
+    # Slice 1's fixed ±10% band.
     return PortfolioValidationContext(
         trade_date=_PM_TRADE_DATE,
         latest_close=latest_close,
         close_as_of=_PM_TRADE_DATE if fresh else None,
+        annualised_volatility=0.20,
     )
 
 
@@ -638,3 +643,50 @@ class TestPortfolioDecisionContractsRegression:
         # Validation Notes section present with the machine-grep ID.
         assert "**Validation Notes**" in full
         assert "TARGET_DIRECTION_VIOLATION" in full
+
+    def test_end_to_end_renders_signed_expected_return(self):
+        """Slice 2 end-to-end: when both target and close are known the
+        rendered markdown carries an ``**Expected Return**`` line as a
+        signed pct so the reader and eval harness see the directional
+        check without recomputing it from the raw numbers."""
+        decision = PortfolioDecision(
+            rating=PortfolioRating.BUY,
+            executive_summary="Accumulate gradually on confirmation.",
+            investment_thesis="Constructive setup; flows supportive.",
+            price_target_horizon=120.0,
+            target_basis="DCF",
+        )
+        result = validate_portfolio_decision(decision, _pm_ctx(latest_close=100.0))
+        md = render_pm_decision(result.decision, latest_close=100.0)
+        assert "**Expected Return**: +20.0%" in md
+        # Expected Return must appear directly below the Horizon Target.
+        assert md.index("**Horizon Target**") < md.index("**Expected Return**")
+
+    def test_end_to_end_currency_mismatch_drops_target_and_notes(self):
+        """Slice 2: a USD-denominated target on an INR stock is dropped
+        with TARGET_CURRENCY_MISMATCH visible in the Validation Notes."""
+        from tradingagents.agents.utils.decision_contracts import (
+            TARGET_CURRENCY_MISMATCH,
+        )
+        decision = PortfolioDecision(
+            rating=PortfolioRating.BUY,
+            executive_summary="Accumulate gradually.",
+            investment_thesis="Setup intact.",
+            price_target_horizon=120.0,
+            target_basis="DCF",
+            target_currency="USD",
+        )
+        ctx = PortfolioValidationContext(
+            trade_date=_PM_TRADE_DATE,
+            latest_close=100.0,
+            close_as_of=_PM_TRADE_DATE,
+            annualised_volatility=0.20,
+            close_currency="INR",
+        )
+        result = validate_portfolio_decision(decision, ctx)
+        md = render_pm_decision(result.decision, latest_close=100.0)
+        footer = render_pm_validation_notes(result.notes)
+        full = f"{md}\n\n{footer}"
+        assert "**Horizon Target**: 120.0" not in full
+        assert "**Expected Return**" not in full
+        assert TARGET_CURRENCY_MISMATCH in full

@@ -28,6 +28,7 @@ from tradingagents.agents.utils.agent_utils import (
 )
 from tradingagents.agents.utils.decision_contracts import (
     PortfolioValidationContext,
+    _currency_from_ticker,
     render_pm_validation_notes,
     validate_portfolio_decision,
 )
@@ -127,6 +128,7 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
         # to nothing.
         ledger_close: Optional[float] = None
         ledger_close_as_of: Optional[datetime] = None
+        ledger_vol: Optional[float] = None
         if (
             ledger
             and ledger.latest_close
@@ -136,6 +138,15 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
             ledger_close_as_of = _parse_trade_date(
                 ledger.latest_close.as_of or ""
             )
+        # Slice 2: pull annualised volatility from the ledger's additive
+        # ``extras`` shelf when an analyst has merged it in. No analyst
+        # currently emits this key, but the seam is in place: when one
+        # does, the Hold band immediately stops emitting
+        # HOLD_BAND_UNCALIBRATED.
+        if ledger and "annualised_volatility" in ledger.extras:
+            fact = ledger.extras["annualised_volatility"]
+            if isinstance(fact.value, (int, float)):
+                ledger_vol = float(fact.value)
 
         latest_close = (
             ledger_close
@@ -144,15 +155,36 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
         )
         trade_date_dt = _parse_trade_date(state.get("trade_date", "")) or datetime.utcnow()
         close_as_of = ledger_close_as_of or trade_date_dt
+
+        # Slice 2: derive the close currency from the ticker suffix so
+        # the validator's TARGET_CURRENCY_MISMATCH rule can fire on
+        # cross-currency targets. Unsuffixed tickers default to USD.
+        close_currency = _currency_from_ticker(state["company_of_interest"])
+
         validation_context = PortfolioValidationContext(
             trade_date=trade_date_dt,
             latest_close=latest_close,
             close_as_of=close_as_of,
+            annualised_volatility=ledger_vol,
+            close_currency=close_currency,
         )
 
         def _validated_render(decision: PortfolioDecision) -> str:
+            # Slice 2: when the LLM doesn't fill target_currency, default
+            # it to the close currency so the validator does NOT trip on
+            # a None vs string mismatch. The currency field carries the
+            # invariant; defaulting is the caller's job, not the
+            # validator's.
+            if (
+                decision.price_target_horizon is not None
+                and decision.target_currency is None
+                and close_currency is not None
+            ):
+                decision = decision.model_copy(
+                    update={"target_currency": close_currency}
+                )
             validated = validate_portfolio_decision(decision, validation_context)
-            md = render_pm_decision(validated.decision)
+            md = render_pm_decision(validated.decision, latest_close=latest_close)
             footer = render_pm_validation_notes(validated.notes)
             return f"{md}\n\n{footer}" if footer else md
 

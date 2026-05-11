@@ -26,6 +26,7 @@ Scope notes:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
@@ -51,12 +52,81 @@ LATEST_CLOSE_STALE = "LATEST_CLOSE_STALE"
 TARGET_DIRECTION_VIOLATION = "TARGET_DIRECTION_VIOLATION"
 TARGET_ORPHAN_BASIS = "TARGET_ORPHAN_BASIS"
 
+# Slice 2 additions.
+HOLD_BAND_UNCALIBRATED = "HOLD_BAND_UNCALIBRATED"
+TARGET_EQUALS_CLOSE = "TARGET_EQUALS_CLOSE"
+TARGET_CURRENCY_MISMATCH = "TARGET_CURRENCY_MISMATCH"
 
-# Fixed Hold band for Slice 1. Slice 2 replaces this with a
-# volatility-scaled band (typically 0.75 × ATR / close). The fixed band is
-# wide enough to keep most legitimate Hold targets and narrow enough to
-# catch the PARACABLES regression (-13% on a Hold).
-_HOLD_BAND = 0.10
+
+# ---------------------------------------------------------------------------
+# Ticker-suffix → ISO-4217 currency derivation.
+#
+# yfinance tickers carry a regional suffix (``.NS`` for NSE, ``.L`` for
+# LSE, etc.). The PM contract defaults ``close_currency`` from the suffix
+# so callers don't have to plumb explicit currencies for every regional
+# exchange. Unknown / no suffix falls back to USD because that is the
+# yfinance default for unsuffixed US tickers.
+# ---------------------------------------------------------------------------
+
+_SUFFIX_TO_CURRENCY: dict[str, str] = {
+    "NS": "INR",
+    "BO": "INR",
+    "L": "GBP",
+    "HK": "HKD",
+    "TO": "CAD",
+    "AX": "AUD",
+    "T": "JPY",
+    "JP": "JPY",
+    "PA": "EUR",
+    "AS": "EUR",
+    "DE": "EUR",
+    "MI": "EUR",
+    "MC": "EUR",
+    "BR": "EUR",
+}
+
+
+def _currency_from_ticker(ticker: str) -> Optional[str]:
+    """Map a yfinance-style ticker to its ISO-4217 quote currency.
+
+    Returns ``USD`` for tickers without a recognised suffix (the yfinance
+    default for unsuffixed US tickers). Returns ``None`` only when the
+    input is falsy.
+    """
+    if not ticker:
+        return None
+    if "." not in ticker:
+        return "USD"
+    suffix = ticker.rsplit(".", 1)[-1].upper()
+    return _SUFFIX_TO_CURRENCY.get(suffix, "USD")
+
+
+# Fallback Hold band when volatility is unavailable. Slice 1 used this as
+# a fixed band; Slice 2 keeps it as the fallback inside
+# ``PortfolioValidationContext.hold_band_pct_default`` and also as the
+# anchor when callers do not override the context default. Wide enough to
+# keep most legitimate Hold targets and narrow enough to catch the
+# PARACABLES regression (-13% on a Hold).
+_HOLD_BAND_DEFAULT = 0.10
+
+# Volatility-scaled band envelope: at least 5% (calm names get a sane
+# minimum), at most 20% (the band stops widening for tail-risk names so a
+# Hold doesn't become an unbounded target).
+_HOLD_BAND_MIN = 0.05
+_HOLD_BAND_MAX = 0.20
+
+# Horizon used when scaling the Hold band by volatility. Slice 2 fixes
+# this at 1.0 year; Slice 4+ will parse ``time_horizon`` text. A 1-year
+# horizon is the natural pairing with annualised vol — sqrt(horizon)=1.0
+# and the formula reduces to ``0.5 * annualised_vol``.
+_HOLD_BAND_HORIZON_YEARS_DEFAULT = 1.0
+
+# Placeholder-equality tolerance for the banned-placeholder rule.
+# Targets within 0.5% of close are noise / placeholders, not a defensible
+# horizon level. Slice 3 will add a ``catalyst_neutral`` opt-out via a
+# controlled-vocab ``target_basis``; Slice 2 has no opt-out (the field is
+# still free-text).
+_TARGET_PLACEHOLDER_EPSILON = 0.005
 
 # Epsilon for "meaningfully above/below close" on directional ratings.
 # 3% mirrors the value the bead description anchors on. Targets within
@@ -232,11 +302,26 @@ class PortfolioValidationContext:
     the validator drops the target loudly (LATEST_CLOSE_STALE) rather
     than skipping the check, because an unverifiable target is worse
     than no target at all.
+
+    Slice 2 additions:
+
+    - ``annualised_volatility``: annualised stdev of daily returns (or
+      ``ATR / close * sqrt(252)``). Used to scale the Hold band. When
+      ``None`` the validator falls back to ``hold_band_pct_default`` and
+      emits ``HOLD_BAND_UNCALIBRATED``.
+    - ``close_currency``: ISO-4217 currency of ``latest_close`` (typically
+      derived from the ticker suffix by callers). Used by the currency-
+      mismatch rule.
+    - ``hold_band_pct_default``: fallback Hold band when volatility is
+      unavailable. 10% mirrors Slice 1's fixed band.
     """
 
     trade_date: datetime
     latest_close: Optional[float] = None
     close_as_of: Optional[datetime] = None
+    annualised_volatility: Optional[float] = None
+    close_currency: Optional[str] = None
+    hold_band_pct_default: float = 0.10
 
 
 @dataclass
@@ -277,28 +362,43 @@ def validate_portfolio_decision(
 ) -> ValidatedPortfolioDecision:
     """Strip semantically invalid fields from a PortfolioDecision.
 
-    Invariants enforced (Slice 1):
+    Invariants enforced (Slice 1 + Slice 2). Rules run in this order so
+    later rules see the cleaned-up state of earlier ones:
 
-    1. **Loud-fail on missing or stale close.** If ``latest_close`` is
-       absent or ``close_as_of`` is more than ~1 session before
-       ``trade_date``, ``price_target_horizon`` and ``target_basis`` are
-       dropped with a ``LATEST_CLOSE_STALE`` note. This is the OPPOSITE
-       of the Trader's silent skip — a PM target without a reference
-       price is unverifiable and we refuse to publish unverifiable
-       numbers in the headline.
+    1. **Loud-fail on missing or stale close** (Slice 1). If
+       ``latest_close`` is absent or ``close_as_of`` is more than ~1
+       session before ``trade_date``, ``price_target_horizon`` and
+       ``target_basis`` are dropped with ``LATEST_CLOSE_STALE``. This is
+       the OPPOSITE of the Trader's silent skip — a PM target without a
+       reference price is unverifiable and we refuse to publish
+       unverifiable numbers in the headline.
 
-    2. **Directional coherence.** For Buy/Overweight, the target must
-       be more than ``_DIRECTIONAL_EPSILON`` above close. For
-       Sell/Underweight, more than ``_DIRECTIONAL_EPSILON`` below. For
-       Hold, within ``_HOLD_BAND`` of close (fixed Slice-1
-       placeholder; Slice 2 replaces with volatility-scaled).
-       Violators drop both value and basis with a
-       ``TARGET_DIRECTION_VIOLATION`` note.
+    2. **Currency mismatch** (Slice 2). When both ``target_currency``
+       and ``close_currency`` are known and disagree, the target is
+       dropped with ``TARGET_CURRENCY_MISMATCH``. A $120 target on an
+       INR stock is a translation bug, not a horizon level.
 
-    3. **Orphan basis cleanup.** If ``target_basis`` is set but
-       ``price_target_horizon`` is None (either originally or after
-       direction-cleanup), the orphan basis is cleared with a
-       ``TARGET_ORPHAN_BASIS`` note.
+    3. **Banned placeholder** (Slice 2). When the target sits within
+       ``_TARGET_PLACEHOLDER_EPSILON`` (0.5%) of close, it is dropped
+       with ``TARGET_EQUALS_CLOSE``. Slice 3 will add a
+       ``catalyst_neutral`` opt-out via the controlled-vocab
+       ``target_basis``; Slice 2 has no opt-out (the field is still
+       free-text).
+
+    4. **Directional coherence** (Slice 1 + Slice 2). For
+       Buy/Overweight, the target must be more than
+       ``_DIRECTIONAL_EPSILON`` above close; for Sell/Underweight, more
+       than ``_DIRECTIONAL_EPSILON`` below. For Hold, the band scales
+       with ``annualised_volatility`` and is clamped to
+       ``[_HOLD_BAND_MIN, _HOLD_BAND_MAX]``; falls back to
+       ``context.hold_band_pct_default`` with ``HOLD_BAND_UNCALIBRATED``
+       when volatility is unavailable. Violators drop value and basis
+       with ``TARGET_DIRECTION_VIOLATION``.
+
+    5. **Orphan basis cleanup** (Slice 1). If ``target_basis`` is set
+       but ``price_target_horizon`` is None (originally or after any of
+       the drops above), the basis is cleared with
+       ``TARGET_ORPHAN_BASIS``.
 
     The validator never invents prices and never rewrites prose.
     """
@@ -316,7 +416,49 @@ def validate_portfolio_decision(
             f"the target's direction cannot be verified."
         )
 
-    # Rule 2: directional contract against latest_close.
+    # Rule 2 (Slice 2): currency mismatch. When both target_currency and
+    # close_currency are known and disagree, the target is meaningless
+    # (a USD target on an INR-denominated stock is a translation bug, not
+    # a horizon level). Runs early so the orphan-basis cleanup sweeps the
+    # paired basis at the end.
+    if (
+        cleaned.price_target_horizon is not None
+        and cleaned.target_currency is not None
+        and context.close_currency is not None
+        and cleaned.target_currency != context.close_currency
+    ):
+        original = cleaned.price_target_horizon
+        cleaned.price_target_horizon = None
+        cleaned.target_basis = None
+        notes.append(
+            f"{TARGET_CURRENCY_MISMATCH}: Price Target {original} "
+            f"({cleaned.target_currency}) dropped — close is denominated "
+            f"in {context.close_currency}, so the target cannot be "
+            f"interpreted as a level in the instrument's quote currency."
+        )
+
+    # Rule 3 (Slice 2): banned placeholder — target within 0.5% of close
+    # is statistical noise / a placeholder, not a defensible horizon
+    # level. Slice 3 will add a ``catalyst_neutral`` opt-out via a
+    # controlled-vocab ``target_basis``; Slice 2 has no opt-out.
+    if (
+        cleaned.price_target_horizon is not None
+        and context.latest_close is not None
+        and context.latest_close > 0
+    ):
+        rel = abs(cleaned.price_target_horizon - context.latest_close) / context.latest_close
+        if rel < _TARGET_PLACEHOLDER_EPSILON:
+            original = cleaned.price_target_horizon
+            cleaned.price_target_horizon = None
+            cleaned.target_basis = None
+            notes.append(
+                f"{TARGET_EQUALS_CLOSE}: Price Target {original} dropped — "
+                f"target sits within {_TARGET_PLACEHOLDER_EPSILON:.1%} of "
+                f"close {context.latest_close}, which is a placeholder, "
+                f"not a defensible horizon target."
+            )
+
+    # Rule 4: directional contract against latest_close.
     if (
         cleaned.price_target_horizon is not None
         and context.latest_close is not None
@@ -343,11 +485,32 @@ def validate_portfolio_decision(
                     f"<-{_DIRECTIONAL_EPSILON:.0%})."
                 )
         elif rating == PortfolioRating.HOLD:
-            upper = close * (1.0 + _HOLD_BAND)
-            lower = close * (1.0 - _HOLD_BAND)
+            # Volatility-scaled band (Slice 2). Falls back to the
+            # context default with a HOLD_BAND_UNCALIBRATED note when
+            # annualised_volatility is unavailable.
+            if context.annualised_volatility is not None:
+                hold_band_pct = max(
+                    _HOLD_BAND_MIN,
+                    min(
+                        _HOLD_BAND_MAX,
+                        0.5
+                        * context.annualised_volatility
+                        * math.sqrt(_HOLD_BAND_HORIZON_YEARS_DEFAULT),
+                    ),
+                )
+            else:
+                hold_band_pct = context.hold_band_pct_default
+                notes.append(
+                    f"{HOLD_BAND_UNCALIBRATED}: annualised_volatility "
+                    f"missing — Hold band defaulted to "
+                    f"±{hold_band_pct:.0%} rather than a volatility-"
+                    f"scaled value."
+                )
+            upper = close * (1.0 + hold_band_pct)
+            lower = close * (1.0 - hold_band_pct)
             if target > upper or target < lower:
                 violation = (
-                    f"target {target} sits outside the ±{_HOLD_BAND:.0%} "
+                    f"target {target} sits outside the ±{hold_band_pct:.0%} "
                     f"Hold band around close {close} — a target this far "
                     f"from close is a directional call, not a Hold."
                 )
@@ -357,7 +520,9 @@ def validate_portfolio_decision(
             cleaned.target_basis = None
             notes.append(f"{TARGET_DIRECTION_VIOLATION}: {violation}")
 
-    # Rule 3: orphan basis cleanup.
+    # Rule 5: orphan basis cleanup. Runs last so it sweeps any basis
+    # orphaned by the earlier drops (currency mismatch, placeholder,
+    # direction).
     if cleaned.price_target_horizon is None and cleaned.target_basis:
         cleaned.target_basis = None
         notes.append(
