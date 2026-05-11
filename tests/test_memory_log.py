@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.agents.schemas import PortfolioDecision, PortfolioRating
+from tradingagents.agents.utils.evidence_ledger import EvidenceFact, EvidenceLedger
 from tradingagents.graph.reflection import Reflector
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.graph.propagation import Propagator
@@ -58,11 +59,28 @@ def _price_df(prices):
     return pd.DataFrame({"Close": prices})
 
 
-def _make_pm_state(past_context=""):
-    """Minimal AgentState dict for portfolio_manager_node."""
+def _make_pm_state(past_context="", latest_close=200.0, trade_date="2026-01-10"):
+    """Minimal AgentState dict for portfolio_manager_node.
+
+    Carries an Evidence Ledger by default so the PM decision-contract
+    validator (which loud-fails on missing close) sees a reference price
+    and lets legitimate targets through. Tests that need a missing close
+    can pass ``latest_close=None``.
+    """
+    ledger = EvidenceLedger(
+        ticker="NVDA",
+        trade_date=trade_date,
+        latest_close=(
+            EvidenceFact(value=latest_close, source="yfinance", as_of=trade_date)
+            if latest_close is not None
+            else None
+        ),
+    )
     return {
         "company_of_interest": "NVDA",
+        "trade_date": trade_date,
         "past_context": past_context,
+        "evidence_ledger": ledger,
         "risk_debate_state": {
             "history": "Risk debate history.",
             "aggressive_history": "",
@@ -791,6 +809,31 @@ class TestPortfolioManagerInjection:
         assert "**Investment Thesis**: AI capex cycle" in md
         assert "**Price Target**: 215.0" in md
         assert "**Time Horizon**: 3-6 months" in md
+
+    def test_pm_validator_drops_invalid_target_end_to_end(self):
+        """PARACABLES regression: a Hold + target -13% from close, threaded
+        through the real ``create_portfolio_manager`` node, must come out
+        with the bad target absent and a Validation Notes footer present.
+        """
+        captured = {}
+        # Hold with a target sitting -13% below close (59.77 vs 52.0) is
+        # structurally a Sell signal; the validator drops it.
+        decision = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="Hold the position; await sector catalyst.",
+            investment_thesis="Evidence balanced; no decisive near-term driver.",
+            price_target_horizon=52.0,
+            target_basis="DCF",
+        )
+        llm = _structured_pm_llm(captured, decision)
+        pm_node = create_portfolio_manager(llm)
+        state = _make_pm_state(latest_close=59.77, trade_date="2026-05-11")
+        result = pm_node(state)
+        md = result["final_trade_decision"]
+        assert "**Price Target**: 52.0" not in md
+        assert "**Horizon Target**: 52.0" not in md
+        assert "**Validation Notes**" in md
+        assert "TARGET_DIRECTION_VIOLATION" in md
 
     def test_pm_falls_back_to_freetext_when_structured_unavailable(self):
         """If a provider does not support with_structured_output, the agent

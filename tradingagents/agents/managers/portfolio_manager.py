@@ -6,9 +6,19 @@ back to markdown for storage in ``final_trade_decision`` so memory log,
 CLI display, and saved reports continue to consume the same shape they do
 today.  When a provider does not expose structured output, the agent falls
 back gracefully to free-text generation.
+
+The rendered decision is run through ``validate_portfolio_decision`` first
+so semantically-invalid headlines (Buy + target below close, Hold + target
+13% below close — the PARACABLES regression) are dropped before the
+markdown is published, with a small ``Validation Notes`` footer naming
+what was normalised.
 """
 
 from __future__ import annotations
+
+import re
+from datetime import datetime
+from typing import Optional
 
 from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
 from tradingagents.agents.utils.agent_utils import (
@@ -16,11 +26,44 @@ from tradingagents.agents.utils.agent_utils import (
     get_horizon_instruction,
     get_language_instruction,
 )
+from tradingagents.agents.utils.decision_contracts import (
+    PortfolioValidationContext,
+    render_pm_validation_notes,
+    validate_portfolio_decision,
+)
 from tradingagents.agents.utils.evidence_ledger import render_evidence_ledger
 from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
+
+
+def _parse_latest_close(key_levels: str) -> Optional[float]:
+    """Extract ``Latest close: <n>`` from the Key Price Levels block.
+
+    Fallback for when the evidence ledger is absent. The same regex shape
+    is used by the Trader; kept duplicated rather than imported to avoid
+    a manager ↔ trader cycle.
+    """
+    if not key_levels:
+        return None
+    match = re.search(r"Latest close:\s*([0-9][0-9.,]*)", key_levels)
+    if not match:
+        return None
+    try:
+        return float(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _parse_trade_date(value: str) -> Optional[datetime]:
+    """Parse a YYYY-MM-DD trade-date string. Returns None on failure."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return None
 
 
 def create_portfolio_manager(llm):
@@ -77,11 +120,47 @@ def create_portfolio_manager(llm):
 
 Be decisive and ground every conclusion in specific evidence from the analysts.{get_horizon_instruction()}{get_language_instruction()}"""
 
+        # Build the validator context from the evidence ledger (preferred)
+        # or the legacy Key Price Levels block (fallback). When neither
+        # carries a usable close, the validator's loud-fail rule drops
+        # any unverifiable target — better than publishing one anchored
+        # to nothing.
+        ledger_close: Optional[float] = None
+        ledger_close_as_of: Optional[datetime] = None
+        if (
+            ledger
+            and ledger.latest_close
+            and isinstance(ledger.latest_close.value, (int, float))
+        ):
+            ledger_close = float(ledger.latest_close.value)
+            ledger_close_as_of = _parse_trade_date(
+                ledger.latest_close.as_of or ""
+            )
+
+        latest_close = (
+            ledger_close
+            if ledger_close is not None
+            else _parse_latest_close(key_levels)
+        )
+        trade_date_dt = _parse_trade_date(state.get("trade_date", "")) or datetime.utcnow()
+        close_as_of = ledger_close_as_of or trade_date_dt
+        validation_context = PortfolioValidationContext(
+            trade_date=trade_date_dt,
+            latest_close=latest_close,
+            close_as_of=close_as_of,
+        )
+
+        def _validated_render(decision: PortfolioDecision) -> str:
+            validated = validate_portfolio_decision(decision, validation_context)
+            md = render_pm_decision(validated.decision)
+            footer = render_pm_validation_notes(validated.notes)
+            return f"{md}\n\n{footer}" if footer else md
+
         final_trade_decision = invoke_structured_or_freetext(
             structured_llm,
             llm,
             prompt,
-            render_pm_decision,
+            _validated_render,
             "Portfolio Manager",
         )
 

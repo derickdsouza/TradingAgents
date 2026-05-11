@@ -27,9 +27,46 @@ Scope notes:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Optional
 
-from tradingagents.agents.schemas import TraderAction, TraderProposal
+from tradingagents.agents.schemas import (
+    PortfolioDecision,
+    PortfolioRating,
+    TraderAction,
+    TraderProposal,
+)
+
+
+# ---------------------------------------------------------------------------
+# Note-ID constants
+#
+# Slice 1 of the PM decision contract surfaces three machine-grep-able note
+# IDs in validator output. Future slices (volatility-scaled bands, drift
+# tracking, currency mismatch) extend this list; downstream evaluation
+# harnesses match on these constants rather than free-text prose.
+# ---------------------------------------------------------------------------
+
+LATEST_CLOSE_STALE = "LATEST_CLOSE_STALE"
+TARGET_DIRECTION_VIOLATION = "TARGET_DIRECTION_VIOLATION"
+TARGET_ORPHAN_BASIS = "TARGET_ORPHAN_BASIS"
+
+
+# Fixed Hold band for Slice 1. Slice 2 replaces this with a
+# volatility-scaled band (typically 0.75 × ATR / close). The fixed band is
+# wide enough to keep most legitimate Hold targets and narrow enough to
+# catch the PARACABLES regression (-13% on a Hold).
+_HOLD_BAND = 0.10
+
+# Epsilon for "meaningfully above/below close" on directional ratings.
+# 3% mirrors the value the bead description anchors on. Targets within
+# epsilon of close on a Buy/Sell are statistical noise, not a target.
+_DIRECTIONAL_EPSILON = 0.03
+
+# Bullish / bearish polarity on the 5-tier scale. Hold is handled
+# separately by the band check.
+_BULLISH_RATINGS = (PortfolioRating.BUY, PortfolioRating.OVERWEIGHT)
+_BEARISH_RATINGS = (PortfolioRating.SELL, PortfolioRating.UNDERWEIGHT)
 
 
 @dataclass(frozen=True)
@@ -161,3 +198,182 @@ def render_validation_notes(notes: list[str]) -> str:
     lines = ["**Validation Notes**:"]
     lines.extend(f"- {note}" for note in notes)
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Portfolio Manager decision contract (Slice 1).
+#
+# Slice 1 of the PM decision contract enforces three rules on
+# ``PortfolioDecision``:
+#
+#   1. **Loud-fail on missing/stale close.** Opposite of the Trader's
+#      silent skip — a PM target without a reference price is unverifiable
+#      and we refuse to publish unverifiable numbers.
+#   2. **Directional coherence.** Buy/Overweight targets must sit
+#      meaningfully above close; Sell/Underweight meaningfully below;
+#      Hold within a fixed ±10% band. Slice 2 replaces the fixed band
+#      with a volatility-scaled one.
+#   3. **Orphan basis cleanup.** A ``target_basis`` label without a
+#      paired ``price_target_horizon`` value is structurally a render bug.
+#
+# Slices 2-5 layer additional rules (currency mismatch, controlled-vocab
+# bases, range targets, scorecard triangulation, drift tracking) on the
+# same shape.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PortfolioValidationContext:
+    """Inputs needed by the PM validator beyond the decision itself.
+
+    ``trade_date`` is required so the staleness check has an anchor.
+    ``latest_close`` and ``close_as_of`` come from the evidence ledger or
+    the Key Price Levels block fed to the agent; when either is missing
+    the validator drops the target loudly (LATEST_CLOSE_STALE) rather
+    than skipping the check, because an unverifiable target is worse
+    than no target at all.
+    """
+
+    trade_date: datetime
+    latest_close: Optional[float] = None
+    close_as_of: Optional[datetime] = None
+
+
+@dataclass
+class ValidatedPortfolioDecision:
+    """Result of validating a PortfolioDecision.
+
+    ``decision`` is a copy of the input with any provably invalid fields
+    cleared (the original input is not mutated). ``notes`` is a
+    human-readable list of the adjustments made; an empty list means the
+    decision passed unchanged.
+    """
+
+    decision: PortfolioDecision
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.notes)
+
+
+def _close_is_stale(ctx: PortfolioValidationContext) -> bool:
+    """Whether the reference close is missing or older than ~1 session.
+
+    "1 session" is approximated as 1 calendar day for Slice 1; Slice 2
+    refines this with an exchange-calendar lookup. The check is
+    deliberately conservative — better to drop a target on a borderline
+    fresh close than to publish one anchored to a stale price.
+    """
+    if ctx.latest_close is None or ctx.close_as_of is None:
+        return True
+    delta = ctx.trade_date - ctx.close_as_of
+    return delta > timedelta(days=1)
+
+
+def validate_portfolio_decision(
+    decision: PortfolioDecision,
+    context: PortfolioValidationContext,
+) -> ValidatedPortfolioDecision:
+    """Strip semantically invalid fields from a PortfolioDecision.
+
+    Invariants enforced (Slice 1):
+
+    1. **Loud-fail on missing or stale close.** If ``latest_close`` is
+       absent or ``close_as_of`` is more than ~1 session before
+       ``trade_date``, ``price_target_horizon`` and ``target_basis`` are
+       dropped with a ``LATEST_CLOSE_STALE`` note. This is the OPPOSITE
+       of the Trader's silent skip — a PM target without a reference
+       price is unverifiable and we refuse to publish unverifiable
+       numbers in the headline.
+
+    2. **Directional coherence.** For Buy/Overweight, the target must
+       be more than ``_DIRECTIONAL_EPSILON`` above close. For
+       Sell/Underweight, more than ``_DIRECTIONAL_EPSILON`` below. For
+       Hold, within ``_HOLD_BAND`` of close (fixed Slice-1
+       placeholder; Slice 2 replaces with volatility-scaled).
+       Violators drop both value and basis with a
+       ``TARGET_DIRECTION_VIOLATION`` note.
+
+    3. **Orphan basis cleanup.** If ``target_basis`` is set but
+       ``price_target_horizon`` is None (either originally or after
+       direction-cleanup), the orphan basis is cleared with a
+       ``TARGET_ORPHAN_BASIS`` note.
+
+    The validator never invents prices and never rewrites prose.
+    """
+    cleaned = decision.model_copy()
+    notes: list[str] = []
+
+    # Rule 1: loud-fail when the reference close is missing or stale.
+    if cleaned.price_target_horizon is not None and _close_is_stale(context):
+        original = cleaned.price_target_horizon
+        cleaned.price_target_horizon = None
+        cleaned.target_basis = None
+        notes.append(
+            f"{LATEST_CLOSE_STALE}: Price Target {original} dropped — "
+            f"latest_close is missing or older than the trade date, so "
+            f"the target's direction cannot be verified."
+        )
+
+    # Rule 2: directional contract against latest_close.
+    if (
+        cleaned.price_target_horizon is not None
+        and context.latest_close is not None
+    ):
+        close = context.latest_close
+        target = cleaned.price_target_horizon
+        rating = cleaned.rating
+        violation: Optional[str] = None
+
+        if rating in _BULLISH_RATINGS:
+            min_target = close * (1.0 + _DIRECTIONAL_EPSILON)
+            if target <= min_target:
+                violation = (
+                    f"target {target} is not meaningfully above close "
+                    f"{close} for a {rating.value} rating (requires "
+                    f">+{_DIRECTIONAL_EPSILON:.0%})."
+                )
+        elif rating in _BEARISH_RATINGS:
+            max_target = close * (1.0 - _DIRECTIONAL_EPSILON)
+            if target >= max_target:
+                violation = (
+                    f"target {target} is not meaningfully below close "
+                    f"{close} for a {rating.value} rating (requires "
+                    f"<-{_DIRECTIONAL_EPSILON:.0%})."
+                )
+        elif rating == PortfolioRating.HOLD:
+            upper = close * (1.0 + _HOLD_BAND)
+            lower = close * (1.0 - _HOLD_BAND)
+            if target > upper or target < lower:
+                violation = (
+                    f"target {target} sits outside the ±{_HOLD_BAND:.0%} "
+                    f"Hold band around close {close} — a target this far "
+                    f"from close is a directional call, not a Hold."
+                )
+
+        if violation is not None:
+            cleaned.price_target_horizon = None
+            cleaned.target_basis = None
+            notes.append(f"{TARGET_DIRECTION_VIOLATION}: {violation}")
+
+    # Rule 3: orphan basis cleanup.
+    if cleaned.price_target_horizon is None and cleaned.target_basis:
+        cleaned.target_basis = None
+        notes.append(
+            f"{TARGET_ORPHAN_BASIS}: target_basis dropped — orphan basis "
+            f"without a paired price_target_horizon value."
+        )
+
+    return ValidatedPortfolioDecision(decision=cleaned, notes=notes)
+
+
+def render_pm_validation_notes(notes: list[str]) -> str:
+    """Render PM-validator notes as a small markdown footer, or ``""``.
+
+    Same shape as ``render_validation_notes`` for the Trader; kept as a
+    named alias so callers in ``portfolio_manager.py`` read clearly and
+    so the two footers can diverge later (e.g. PM-specific severity
+    headers) without churn at the call sites.
+    """
+    return render_validation_notes(notes)

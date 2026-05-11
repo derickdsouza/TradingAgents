@@ -19,9 +19,9 @@ so that:
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -435,9 +435,36 @@ class PortfolioDecision(BaseModel):
             "incorporate them; otherwise rely solely on the current analysis."
         ),
     )
-    price_target: Optional[float] = Field(
+    price_target_horizon: Optional[float] = Field(
         default=None,
-        description="Optional target price in the instrument's quote currency.",
+        description=(
+            "Optional price target the position is anchored to over the "
+            "stated `time_horizon` (or the prompt's default horizon when "
+            "`time_horizon` is empty). In the instrument's quote currency. "
+            "DIRECTIONAL CONSTRAINT: for bullish ratings (Buy / Overweight) "
+            "this number MUST be MEANINGFULLY ABOVE the current close — a "
+            "target below close is a Sell signal, not a Buy target. For "
+            "bearish ratings (Underweight / Sell) it MUST be MEANINGFULLY "
+            "BELOW the current close. For Hold the target sits within a "
+            "narrow band around the close (the position is anchored, not "
+            "directional). 'Meaningfully' means more than statistical noise "
+            "(roughly ±3% of close). "
+            "NEVER use the latest close itself as a placeholder: latest "
+            "close is the *current* price, not a *target*. "
+            "NEVER use this field for a pullback / re-entry level: that is "
+            "structurally different from a horizon target — a target is a "
+            "level the position is *pointed at*, not a level it would buy "
+            "back at. Leave NULL when no defensible target exists."
+        ),
+    )
+    target_basis: Optional[str] = Field(
+        default=None,
+        description=(
+            "One-line label naming what `price_target_horizon` is anchored "
+            "to (e.g. 'DCF', 'PE multiple', 'analyst consensus', 'range "
+            "midpoint'). ALWAYS populate when `price_target_horizon` is "
+            "set so the reader sees what the number means."
+        ),
     )
     time_horizon: Optional[str] = Field(
         default=None,
@@ -451,6 +478,28 @@ class PortfolioDecision(BaseModel):
             "evidence categories instead of only narrative synthesis."
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_price_target(cls, data: Any) -> Any:
+        """Coerce legacy ``price_target`` payloads into ``price_target_horizon``.
+
+        Memory-log entries written before Slice 1 of the PM decision
+        contract carried ``price_target`` as the key. New code reads
+        ``price_target_horizon``. When both are supplied the new name wins
+        — callers that have already adopted the new schema are not silently
+        downgraded by stale data still carrying the old key. Removable
+        once memory-log entries from before the migration roll out of the
+        retention window.
+        """
+        if not isinstance(data, dict):
+            return data
+        if "price_target" in data and "price_target_horizon" not in data:
+            data["price_target_horizon"] = data.pop("price_target")
+        elif "price_target" in data:
+            # Both present: the new name takes precedence.
+            data.pop("price_target")
+        return data
 
 
 def render_pm_decision(decision: PortfolioDecision) -> str:
@@ -468,8 +517,21 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
         "",
         f"**Investment Thesis**: {decision.investment_thesis}",
     ]
-    if decision.price_target is not None:
-        parts.extend(["", f"**Price Target**: {decision.price_target}"])
+    if decision.price_target_horizon is not None:
+        # MIGRATION SHIM (Slice 1 of PM decision contract): emit BOTH the
+        # legacy ``Price Target`` and the new ``Horizon Target`` labels so
+        # existing CLI parsers (cli/main.py `_build_trade_setup_block`,
+        # `_ENSEMBLE_FIELDS["price_target"]`) keep matching while readers
+        # learn the new label. REMOVE the legacy line once Slice 2 ships
+        # OR 4 weeks pass, whichever first. Both labels read from the
+        # single source of truth ``price_target_horizon``.
+        target = decision.price_target_horizon
+        target_line = f"**Price Target**: {target}"
+        horizon_line = f"**Horizon Target**: {target}"
+        if decision.target_basis:
+            target_line += f" — _{decision.target_basis}_"
+            horizon_line += f" — _{decision.target_basis}_"
+        parts.extend(["", target_line, "", horizon_line])
     if decision.time_horizon:
         parts.extend(["", f"**Time Horizon**: {decision.time_horizon}"])
     if decision.scorecard is not None:

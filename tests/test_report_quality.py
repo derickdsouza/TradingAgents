@@ -26,6 +26,7 @@ parsers, saved markdown shape) rather than internal implementation details.
 from __future__ import annotations
 
 import re
+from datetime import datetime
 
 import pytest
 
@@ -42,7 +43,10 @@ from tradingagents.agents.schemas import (
     render_trader_proposal,
 )
 from tradingagents.agents.utils.decision_contracts import (
+    PortfolioValidationContext,
     TraderValidationContext,
+    render_pm_validation_notes,
+    validate_portfolio_decision,
     validate_trader_proposal,
 )
 from tradingagents.agents.utils.evidence_ledger import (
@@ -513,3 +517,124 @@ class TestSavedReportSmoke:
     def test_combined_report_keeps_final_transaction_line(self):
         """The trailing sentinel survives concatenation with other sections."""
         assert "FINAL TRANSACTION PROPOSAL:" in self._build_report()
+
+
+# ---------------------------------------------------------------------------
+# PM decision-contract regression fixtures (Slice 1).
+#
+# The literal regression that motivated this slice: PARACABLES.NS run on
+# 2026-05-11 emitted ``Rating=Hold`` with ``Price Target=52.0`` on a close
+# of ``59.77`` — a -13% implied return paired with a Hold call, which is
+# structurally incoherent. The validator drops the target loudly so the
+# published markdown never carries the contradiction again. The six
+# fixtures pin both the regression itself and the directional contract
+# across the rating axis.
+# ---------------------------------------------------------------------------
+
+
+_PM_TRADE_DATE = datetime(2026, 5, 11)
+
+
+def _pm_ctx(latest_close: float | None = 100.0, *, fresh: bool = True) -> PortfolioValidationContext:
+    return PortfolioValidationContext(
+        trade_date=_PM_TRADE_DATE,
+        latest_close=latest_close,
+        close_as_of=_PM_TRADE_DATE if fresh else None,
+    )
+
+
+class TestPortfolioDecisionContractsRegression:
+    """End-to-end regression fixtures for the PM decision-contract validator."""
+
+    def test_paracables_hold_with_negative_13pct_target_is_dropped(self):
+        """The literal regression: Hold + close 59.77 + target 52.0 → dropped."""
+        decision = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="Hold position, await sector catalyst.",
+            investment_thesis="Evidence balanced; no decisive driver near-term.",
+            price_target_horizon=52.0,
+            target_basis="DCF",
+        )
+        ctx = PortfolioValidationContext(
+            trade_date=_PM_TRADE_DATE,
+            latest_close=59.77,
+            close_as_of=_PM_TRADE_DATE,
+        )
+        result = validate_portfolio_decision(decision, ctx)
+        assert result.decision.price_target_horizon is None
+        assert result.decision.target_basis is None
+        assert result.changed
+
+    def test_buy_target_below_close_is_dropped(self):
+        decision = PortfolioDecision(
+            rating=PortfolioRating.BUY,
+            executive_summary="Accumulate gradually.",
+            investment_thesis="Setup intact.",
+            price_target_horizon=90.0,
+            target_basis="DCF",
+        )
+        result = validate_portfolio_decision(decision, _pm_ctx())
+        assert result.decision.price_target_horizon is None
+        assert result.decision.target_basis is None
+
+    def test_sell_target_above_close_is_dropped(self):
+        decision = PortfolioDecision(
+            rating=PortfolioRating.SELL,
+            executive_summary="Exit position.",
+            investment_thesis="Thesis broken.",
+            price_target_horizon=110.0,
+            target_basis="DCF",
+        )
+        result = validate_portfolio_decision(decision, _pm_ctx())
+        assert result.decision.price_target_horizon is None
+
+    def test_overweight_target_5pct_above_close_is_preserved(self):
+        decision = PortfolioDecision(
+            rating=PortfolioRating.OVERWEIGHT,
+            executive_summary="Increase exposure on confirmation.",
+            investment_thesis="Constructive setup; await retest.",
+            price_target_horizon=105.0,
+            target_basis="DCF",
+        )
+        result = validate_portfolio_decision(decision, _pm_ctx())
+        assert result.decision.price_target_horizon == 105.0
+        assert result.decision.target_basis == "DCF"
+        assert not result.changed
+
+    def test_hold_target_3pct_above_close_is_preserved(self):
+        decision = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="Hold the line; reassess on earnings.",
+            investment_thesis="Balanced.",
+            price_target_horizon=103.0,
+            target_basis="range midpoint",
+        )
+        result = validate_portfolio_decision(decision, _pm_ctx())
+        assert result.decision.price_target_horizon == 103.0
+        assert not result.changed
+
+    def test_end_to_end_render_drops_target_and_emits_validation_notes(self):
+        """End-to-end: rendered markdown has the bad target absent AND a
+        Validation Notes section listing why."""
+        decision = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="Hold position, await sector catalyst.",
+            investment_thesis="Evidence balanced.",
+            price_target_horizon=52.0,
+            target_basis="DCF",
+        )
+        ctx = PortfolioValidationContext(
+            trade_date=_PM_TRADE_DATE,
+            latest_close=59.77,
+            close_as_of=_PM_TRADE_DATE,
+        )
+        result = validate_portfolio_decision(decision, ctx)
+        md = render_pm_decision(result.decision)
+        footer = render_pm_validation_notes(result.notes)
+        full = f"{md}\n\n{footer}"
+        # Bad target absent from BOTH labels.
+        assert "**Price Target**: 52.0" not in full
+        assert "**Horizon Target**: 52.0" not in full
+        # Validation Notes section present with the machine-grep ID.
+        assert "**Validation Notes**" in full
+        assert "TARGET_DIRECTION_VIOLATION" in full
