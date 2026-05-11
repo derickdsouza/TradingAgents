@@ -65,14 +65,23 @@ def _fetch_levels_data(ticker: str, trade_date: str) -> Optional[dict]:
     window_52w = df.tail(252) if len(df) >= 252 else df
     window_20d = df.tail(20)
 
+    # yfinance returns ``float32`` Series; ``float()`` widens to ``float64``
+    # but preserves the float32 imprecision (60.07 → 60.06999969482422).
+    # Round at the data boundary so every downstream consumer — prose
+    # renderers, validator notes, ``committed_close`` snapshots — sees a
+    # clean number without each site re-rounding. 4 decimals keeps room
+    # for sub-rupee/sub-cent precision in FX-like quotes.
+    def _clean(x: float) -> float:
+        return round(float(x), 4)
+
     return {
-        "latest_close": float(close.iloc[-1]),
-        "sma_50": float(close.tail(50).mean()) if len(close) >= 50 else None,
-        "sma_200": float(close.tail(200).mean()) if len(close) >= 200 else None,
-        "high_52w": float(window_52w["High"].max()),
-        "low_52w": float(window_52w["Low"].min()),
-        "high_20d": float(window_20d["High"].max()),
-        "low_20d": float(window_20d["Low"].min()),
+        "latest_close": _clean(close.iloc[-1]),
+        "sma_50": _clean(close.tail(50).mean()) if len(close) >= 50 else None,
+        "sma_200": _clean(close.tail(200).mean()) if len(close) >= 200 else None,
+        "high_52w": _clean(window_52w["High"].max()),
+        "low_52w": _clean(window_52w["Low"].min()),
+        "high_20d": _clean(window_20d["High"].max()),
+        "low_20d": _clean(window_20d["Low"].min()),
     }
 
 
