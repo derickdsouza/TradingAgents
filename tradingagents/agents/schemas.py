@@ -486,6 +486,25 @@ class PortfolioDecision(BaseModel):
             "set so the reader sees what the number means."
         ),
     )
+    target_range_low: Optional[float] = Field(
+        default=None,
+        description=(
+            "Lower bound of the horizon target range. Pair with `target_range_high` "
+            "and `price_target_horizon` (median). Point targets at 12-month horizons "
+            "are false precision; prefer ranges unless you have a specific basis "
+            "(DCF base case, peer multiple) anchored to a single number. Index, FX, "
+            "and macro tickers REQUIRE range form — point targets on those classes "
+            "are rejected by the validator."
+        ),
+    )
+    target_range_high: Optional[float] = Field(
+        default=None,
+        description=(
+            "Upper bound of the horizon target range. Pair with `target_range_low` "
+            "and `price_target_horizon` (median). Required when `target_range_low` "
+            "is set."
+        ),
+    )
     target_currency: Optional[str] = Field(
         default=None,
         description=(
@@ -612,8 +631,39 @@ def render_pm_decision(
             target_line += f" — _{decision.target_basis}_"
             horizon_line += f" — _{decision.target_basis}_"
         parts.extend(["", target_line, "", horizon_line])
-        if latest_close is not None and latest_close > 0:
-            pct = (target - latest_close) / latest_close * 100.0
+    # Slice 4: Target Range line renders directly below the horizon target
+    # when both bounds are set AND the range is non-trivial (i.e. bounds
+    # differ from each other and from the horizon, when present). A trivial
+    # range adds nothing the horizon target doesn't already say.
+    if (
+        decision.target_range_low is not None
+        and decision.target_range_high is not None
+    ):
+        low = decision.target_range_low
+        high = decision.target_range_high
+        is_trivial = (
+            low == high
+            and decision.price_target_horizon is not None
+            and low == decision.price_target_horizon
+        )
+        if not is_trivial:
+            parts.extend(["", f"**Target Range**: {low} – {high}"])
+    # Expected Return: prefer the horizon target as the reference when set,
+    # otherwise fall back to the midpoint of the range. Either way the
+    # reader gets the signed-pct directional check without recomputing.
+    if latest_close is not None and latest_close > 0:
+        reference: Optional[float] = None
+        if decision.price_target_horizon is not None:
+            reference = decision.price_target_horizon
+        elif (
+            decision.target_range_low is not None
+            and decision.target_range_high is not None
+        ):
+            reference = (
+                decision.target_range_low + decision.target_range_high
+            ) / 2.0
+        if reference is not None:
+            pct = (reference - latest_close) / latest_close * 100.0
             sign = "+" if pct >= 0 else ""
             parts.extend(["", f"**Expected Return**: {sign}{pct:.1f}%"])
     # Slice 3: pullback zone renders independently of the horizon target

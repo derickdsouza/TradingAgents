@@ -735,3 +735,49 @@ class TestPortfolioDecisionContractsRegression:
         assert "**Expected Return**: +3.0%" in md
         assert "**Pullback Zone**: 90.0" in md
         assert "moving_average" in md
+
+    def test_slice4_range_form_preserved_end_to_end(self):
+        """Slice 4 end-to-end: Overweight + range [60, 80] with close 50
+        survives validation (both bounds meaningfully above close) and
+        renders as a Target Range line."""
+        decision = PortfolioDecision(
+            rating=PortfolioRating.OVERWEIGHT,
+            executive_summary="Accumulate on confirmation.",
+            investment_thesis="Setup intact; range reflects scenario span.",
+            target_range_low=60.0,
+            target_range_high=80.0,
+        )
+        result = validate_portfolio_decision(decision, _pm_ctx(latest_close=50.0))
+        md = render_pm_decision(result.decision, latest_close=50.0)
+        assert result.decision.target_range_low == 60.0
+        assert result.decision.target_range_high == 80.0
+        assert "**Target Range**: 60.0 – 80.0" in md
+
+    def test_slice4_triangulation_note_rendered_on_strong_scorecard_hold(self):
+        """Slice 4 end-to-end: scorecard net +5 + Rating=Hold → soft
+        triangulator emits SCORECARD_RATING_DIVERGENCE in a distinct
+        Triangulation Notes section."""
+        from tradingagents.agents.utils.decision_contracts import (
+            render_triangulation_notes,
+            triangulate_portfolio_decision,
+        )
+        sc = EvidenceScorecard(
+            bull_case=1, bear_case=1, trend_technical=1,
+            fundamental_quality=1, liquidity_risk=0, catalyst_clarity=0,
+            macro_regime=1, valuation=0,
+            confidence=Confidence.MEDIUM,
+            rating_rationale="Net evidence is bullish but valuation is full.",
+            tie_breaker="Balanced near-term; await pullback.",
+            invalidating_evidence="Macro regime turning hawkish.",
+        )
+        decision = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="Hold; await better entry.",
+            investment_thesis="Constructive but extended.",
+            scorecard=sc,
+        )
+        ctx = _pm_ctx(latest_close=100.0)
+        triangulated = triangulate_portfolio_decision(decision, ctx)
+        md = render_triangulation_notes(triangulated.notes)
+        assert "**Triangulation Notes**" in md
+        assert "SCORECARD_RATING_DIVERGENCE" in md

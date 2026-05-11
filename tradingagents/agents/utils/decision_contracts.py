@@ -64,6 +64,14 @@ TARGET_BASIS_UNRECOGNISED = "TARGET_BASIS_UNRECOGNISED"
 PULLBACK_BASIS_UNRECOGNISED = "PULLBACK_BASIS_UNRECOGNISED"
 PULLBACK_DIRECTION_VIOLATION = "PULLBACK_DIRECTION_VIOLATION"
 
+# Slice 4 additions.
+RANGE_INCOMPLETE = "RANGE_INCOMPLETE"
+RANGE_INVERTED = "RANGE_INVERTED"
+RANGE_INCONSISTENT_WITH_HORIZON = "RANGE_INCONSISTENT_WITH_HORIZON"
+POINT_TARGET_INAPPROPRIATE = "POINT_TARGET_INAPPROPRIATE"
+SCORECARD_RATING_DIVERGENCE = "SCORECARD_RATING_DIVERGENCE"
+SCORECARD_TARGET_DIVERGENCE = "SCORECARD_TARGET_DIVERGENCE"
+
 # Slice 3 controlled vocabularies. Enforced post-parse so the schema stays
 # simple (free-text fields) and vocabulary failures surface as named notes
 # alongside the rest of the structural checks.
@@ -130,6 +138,61 @@ def _currency_from_ticker(ticker: str) -> Optional[str]:
         return "USD"
     suffix = ticker.rsplit(".", 1)[-1].upper()
     return _SUFFIX_TO_CURRENCY.get(suffix, "USD")
+
+
+# ---------------------------------------------------------------------------
+# Ticker-class classifier (Slice 4).
+#
+# Indices, FX pairs, macro rate series, and commodity futures cannot carry
+# a defensible point target at a 12-month horizon — the false-precision
+# penalty is large at the index level. The classifier groups tickers into
+# the coarse buckets the point-reject rule branches on; equities are the
+# only class permitted to use a point target.
+# ---------------------------------------------------------------------------
+
+# Specific yfinance symbols that are interest-rate / DXY series rather
+# than indexes proper. Kept as an explicit set so a typo in a feed doesn't
+# silently get reclassified as a regular index.
+_MACRO_RATE_SYMBOLS: frozenset[str] = frozenset({
+    "^TNX",  # 10-year Treasury yield
+    "^IRX",  # 13-week Treasury bill yield
+    "^FVX",  # 5-year Treasury yield
+    "^TYX",  # 30-year Treasury yield
+    "DX-Y.NYB",  # US dollar index
+})
+
+
+def _ticker_class(ticker: str) -> str:
+    """Classify a yfinance-style ticker into a coarse instrument class.
+
+    Buckets:
+
+    - ``"index"``       — broad-market indexes (``^NSEI``, ``^GSPC``).
+    - ``"fx"``          — currency pairs (``EURUSD=X``, ``JPY=X``).
+    - ``"macro_rate"``  — interest-rate / DXY series (``^TNX``, ``DX-Y.NYB``).
+    - ``"commodity_future"`` — futures contracts (``CL=F``, ``GC=F``).
+    - ``"equity"``      — everything else (the default).
+
+    The classifier is intentionally coarse: it just needs to know whether
+    a point target is defensible on this instrument. Refining the rules
+    (sector indexes, single-stock futures, etc.) is a follow-up; for now
+    if a real edge case shows up the test fixture catches it and the
+    classifier grows a branch.
+    """
+    if not ticker:
+        return "equity"
+    upper = ticker.upper()
+    # Macro-rate symbols come first so they aren't swallowed by the
+    # generic ``^`` index branch.
+    if upper in _MACRO_RATE_SYMBOLS:
+        return "macro_rate"
+    if upper.startswith("^"):
+        return "index"
+    if upper.endswith("=F"):
+        return "commodity_future"
+    if upper.endswith("=X"):
+        return "fx"
+    return "equity"
 
 
 # Fallback Hold band when volatility is unavailable. Slice 1 used this as
@@ -353,6 +416,11 @@ class PortfolioValidationContext:
     annualised_volatility: Optional[float] = None
     close_currency: Optional[str] = None
     hold_band_pct_default: float = 0.10
+    # Slice 4: coarse instrument-class label so the validator can reject
+    # point targets on instruments that have no defensible point view at
+    # a 12-month horizon (indexes, FX, macro rates, commodity futures).
+    # Callers populate from ``_ticker_class(ticker)``.
+    ticker_class: Optional[str] = None
 
 
 @dataclass
@@ -577,6 +645,130 @@ def validate_portfolio_decision(
             cleaned.target_basis = None
             notes.append(f"{TARGET_DIRECTION_VIOLATION}: {violation}")
 
+    # Rule 4b (Slice 4): directional contract for range bounds. The range
+    # bounds must point the same direction as the rating; for Buy/Overweight
+    # BOTH bounds must sit above ``close * (1 + epsilon)``, for
+    # Sell/Underweight BOTH below ``close * (1 - epsilon)``, for Hold BOTH
+    # within the vol-scaled band. A violation drops BOTH bounds together
+    # (a half-valid range is structurally a point, not a range). Suspended
+    # under ``rating_target_disagreement`` just like the point variant.
+    if (
+        cleaned.target_range_low is not None
+        and cleaned.target_range_high is not None
+        and context.latest_close is not None
+        and not contract_suspended
+    ):
+        close = context.latest_close
+        low = cleaned.target_range_low
+        high = cleaned.target_range_high
+        rating = cleaned.rating
+        range_violation: Optional[str] = None
+
+        if rating in _BULLISH_RATINGS:
+            min_target = close * (1.0 + _DIRECTIONAL_EPSILON)
+            if low <= min_target or high <= min_target:
+                range_violation = (
+                    f"range [{low}, {high}] has a bound not meaningfully "
+                    f"above close {close} for a {rating.value} rating "
+                    f"(requires both bounds >+{_DIRECTIONAL_EPSILON:.0%})."
+                )
+        elif rating in _BEARISH_RATINGS:
+            max_target = close * (1.0 - _DIRECTIONAL_EPSILON)
+            if low >= max_target or high >= max_target:
+                range_violation = (
+                    f"range [{low}, {high}] has a bound not meaningfully "
+                    f"below close {close} for a {rating.value} rating "
+                    f"(requires both bounds <-{_DIRECTIONAL_EPSILON:.0%})."
+                )
+        elif rating == PortfolioRating.HOLD:
+            # Mirror the point-target Hold band computation. Re-derive
+            # here rather than thread state through the prior branch.
+            if context.annualised_volatility is not None:
+                hold_band_pct = max(
+                    _HOLD_BAND_MIN,
+                    min(
+                        _HOLD_BAND_MAX,
+                        0.5
+                        * context.annualised_volatility
+                        * math.sqrt(_HOLD_BAND_HORIZON_YEARS_DEFAULT),
+                    ),
+                )
+            else:
+                hold_band_pct = context.hold_band_pct_default
+            upper = close * (1.0 + hold_band_pct)
+            lower = close * (1.0 - hold_band_pct)
+            if low < lower or high > upper:
+                range_violation = (
+                    f"range [{low}, {high}] has a bound outside the "
+                    f"±{hold_band_pct:.0%} Hold band around close {close} "
+                    f"— a range this wide is a directional call, not a Hold."
+                )
+
+        if range_violation is not None:
+            cleaned.target_range_low = None
+            cleaned.target_range_high = None
+            notes.append(f"{TARGET_DIRECTION_VIOLATION}: {range_violation}")
+
+    # Rule 4c (Slice 4): range coherence — incomplete, inverted, or
+    # inconsistent-with-horizon. Runs after the directional contract so a
+    # directional drop above doesn't trigger a spurious incomplete note.
+    low = cleaned.target_range_low
+    high = cleaned.target_range_high
+    if (low is None) ^ (high is None):
+        which = "high" if low is not None else "low"
+        cleaned.target_range_low = None
+        cleaned.target_range_high = None
+        notes.append(
+            f"{RANGE_INCOMPLETE}: target_range_{which} missing — both "
+            f"bounds must be set together; dropping the orphan bound."
+        )
+    elif low is not None and high is not None:
+        if low > high:
+            cleaned.target_range_low = None
+            cleaned.target_range_high = None
+            notes.append(
+                f"{RANGE_INVERTED}: target_range_low {low} > "
+                f"target_range_high {high} — bounds dropped."
+            )
+        elif (
+            cleaned.price_target_horizon is not None
+            and not (low <= cleaned.price_target_horizon <= high)
+        ):
+            horizon = cleaned.price_target_horizon
+            cleaned.target_range_low = None
+            cleaned.target_range_high = None
+            notes.append(
+                f"{RANGE_INCONSISTENT_WITH_HORIZON}: price_target_horizon "
+                f"{horizon} sits outside range [{low}, {high}] — range "
+                f"dropped (horizon target preserved as authoritative)."
+            )
+
+    # Rule 4d (Slice 4): ticker-class point reject. Indexes, FX pairs,
+    # macro-rate series, and commodity futures have no defensible point
+    # target at a 12-month horizon — the false-precision penalty is too
+    # large. When the instrument class is one of these and a point target
+    # is present (with no range), drop the point and direct the PM to the
+    # range form. Suspended under ``rating_target_disagreement`` so a
+    # named escape hatch can still override.
+    _POINT_INAPPROPRIATE_CLASSES = (
+        "index", "fx", "macro_rate", "commodity_future",
+    )
+    if (
+        context.ticker_class in _POINT_INAPPROPRIATE_CLASSES
+        and cleaned.price_target_horizon is not None
+        and not contract_suspended
+    ):
+        original = cleaned.price_target_horizon
+        cleaned.price_target_horizon = None
+        cleaned.target_basis = None
+        notes.append(
+            f"{POINT_TARGET_INAPPROPRIATE}: Price Target {original} "
+            f"dropped — ticker_class '{context.ticker_class}' requires "
+            f"the range form (target_range_low/target_range_high); point "
+            f"targets at 12-month horizons are false precision on this "
+            f"instrument class."
+        )
+
     # Rule 5 (Slice 3): basis vocabulary validation. Coerce recognised
     # values to canonical lowercase; drop unrecognised values with a
     # named note. The target itself is preserved when only the basis is
@@ -710,3 +902,158 @@ def render_pm_validation_notes(notes: list[str]) -> str:
     headers) without churn at the call sites.
     """
     return render_validation_notes(notes)
+
+
+# ---------------------------------------------------------------------------
+# Soft triangulation validator (Slice 4).
+#
+# The hard validator above DROPS fields when invariants fail. The soft
+# triangulator never drops anything — it only emits advisory notes when
+# the scorecard, rating, and target direction disagree. This surfaces
+# weak signals (a strongly bullish scorecard paired with a Hold rating)
+# that the directional contract on its own would not catch, without
+# imposing a deterministic drop on what is ultimately a soft judgement
+# call.
+# ---------------------------------------------------------------------------
+
+# Threshold for "strong" scorecard direction: 8 categories each scored
+# -2..+2, so net spans -16..+16. |net| >= 4 is the cutoff at which the
+# weight of evidence is firmly on one side; the PARACABLES case at -2
+# is below this threshold (correctly, since the scorecard there really
+# is roughly balanced — the Hold rating is reasonable on the scorecard
+# alone; the hard contract still drops the target separately).
+_SCORECARD_STRONG_THRESHOLD = 4
+
+
+@dataclass
+class TriangulatedPortfolioDecision:
+    """Result of running the soft triangulator over a PortfolioDecision.
+
+    ``decision`` is the input unchanged — the triangulator NEVER drops
+    fields. ``notes`` carries any advisory messages flagged. Keep this
+    distinct from ``ValidatedPortfolioDecision`` so callers know which
+    notes are deterministic drops and which are advisory.
+    """
+
+    decision: PortfolioDecision
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.notes)
+
+
+def _scorecard_net(decision: PortfolioDecision) -> Optional[int]:
+    """Sum the scorecard's directional category scores.
+
+    Returns ``None`` when no scorecard is attached. Confidence and the
+    prose fields are not part of the sum — the net is a pure directional
+    summary of the eight category scores.
+    """
+    sc = decision.scorecard
+    if sc is None:
+        return None
+    return (
+        sc.bull_case
+        + sc.bear_case
+        + sc.trend_technical
+        + sc.fundamental_quality
+        + sc.liquidity_risk
+        + sc.catalyst_clarity
+        + sc.macro_regime
+        + sc.valuation
+    )
+
+
+def triangulate_portfolio_decision(
+    decision: PortfolioDecision,
+    context: PortfolioValidationContext,
+) -> TriangulatedPortfolioDecision:
+    """Run the SOFT triangulator over a PortfolioDecision.
+
+    Emits two named advisory notes (no fields ever dropped):
+
+    - ``SCORECARD_RATING_DIVERGENCE`` — the scorecard net is firmly on
+      one side (``|net| >= _SCORECARD_STRONG_THRESHOLD``) but the rating
+      does not match. Example: net +5 with a Hold rating.
+    - ``SCORECARD_TARGET_DIVERGENCE`` — the scorecard net is firmly on
+      one side but the horizon target points the other way relative to
+      the latest close.
+
+    Both checks require a scorecard; the target check also requires a
+    known ``latest_close``. With either input missing the corresponding
+    check is silently skipped.
+    """
+    notes: list[str] = []
+
+    net = _scorecard_net(decision)
+    if net is None:
+        return TriangulatedPortfolioDecision(decision=decision, notes=notes)
+
+    rating = decision.rating
+
+    # Rule A: rating direction vs scorecard direction.
+    if net >= _SCORECARD_STRONG_THRESHOLD and rating in (
+        PortfolioRating.HOLD,
+        PortfolioRating.UNDERWEIGHT,
+        PortfolioRating.SELL,
+    ):
+        notes.append(
+            f"{SCORECARD_RATING_DIVERGENCE}: scorecard net "
+            f"{'+' if net > 0 else ''}{net} is strongly bullish but "
+            f"rating is {rating.value} — consider upgrading the rating "
+            f"or naming an offsetting risk factor that explains the gap."
+        )
+    elif net <= -_SCORECARD_STRONG_THRESHOLD and rating in (
+        PortfolioRating.BUY,
+        PortfolioRating.OVERWEIGHT,
+        PortfolioRating.HOLD,
+    ):
+        notes.append(
+            f"{SCORECARD_RATING_DIVERGENCE}: scorecard net "
+            f"{net} is strongly bearish but rating is {rating.value} — "
+            f"consider downgrading the rating or naming an offsetting "
+            f"support factor that explains the gap."
+        )
+
+    # Rule B: target direction vs scorecard direction.
+    close = context.latest_close
+    target = decision.price_target_horizon
+    if (
+        close is not None
+        and close > 0
+        and target is not None
+        and abs(net) >= _SCORECARD_STRONG_THRESHOLD
+    ):
+        if target > close * (1.0 + _DIRECTIONAL_EPSILON):
+            target_dir = 1
+        elif target < close * (1.0 - _DIRECTIONAL_EPSILON):
+            target_dir = -1
+        else:
+            target_dir = 0
+        scorecard_dir = 1 if net > 0 else -1
+        if target_dir != 0 and target_dir != scorecard_dir:
+            notes.append(
+                f"{SCORECARD_TARGET_DIVERGENCE}: scorecard net "
+                f"{'+' if net > 0 else ''}{net} points "
+                f"{'bullish' if scorecard_dir > 0 else 'bearish'} but "
+                f"price_target_horizon {target} relative to close "
+                f"{close} points the other way — verify the target "
+                f"reflects the scorecard's weight of evidence."
+            )
+
+    return TriangulatedPortfolioDecision(decision=decision, notes=notes)
+
+
+def render_triangulation_notes(notes: list[str]) -> str:
+    """Render triangulation notes as an advisory markdown footer.
+
+    Kept distinct from ``render_pm_validation_notes`` so the reader sees
+    which notes are deterministic drops (Validation Notes) and which are
+    advisory soft signals (Triangulation Notes — no fields modified).
+    """
+    if not notes:
+        return ""
+    lines = ["**Triangulation Notes** (advisory; no fields modified):"]
+    lines.extend(f"- {note}" for note in notes)
+    return "\n".join(lines)

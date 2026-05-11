@@ -1633,3 +1633,512 @@ class TestPortfolioManagerSlice3Prompt:
             "structural_optionality", "merger_arb_floor",
         ]:
             assert token in prompt, f"missing disagreement token: {token}"
+
+
+# ---------------------------------------------------------------------------
+# Slice 4: range targets, ticker-class point reject, soft triangulation.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestTargetRangeFields:
+    """Slice 4: PortfolioDecision gains optional ``target_range_low`` and
+    ``target_range_high`` fields. A point target (``price_target_horizon``
+    alone) is still legal; the range is the new canonical horizon form."""
+
+    def test_range_fields_set_with_valid_bounds_instantiates(self):
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=60.0,
+            target_range_low=55.0,
+            target_range_high=70.0,
+        )
+        assert decision.target_range_low == 55.0
+        assert decision.target_range_high == 70.0
+        assert decision.price_target_horizon == 60.0
+
+    def test_range_fields_absent_is_backwards_compatible(self):
+        decision = _pm_decision(rating=PortfolioRating.HOLD)
+        assert decision.target_range_low is None
+        assert decision.target_range_high is None
+
+
+@pytest.mark.unit
+class TestTickerClassClassifier:
+    """Slice 4: ``_ticker_class`` maps a yfinance-style ticker into one of
+    ``{index, fx, macro_rate, commodity_future, equity}``. Used by the
+    point-reject rule — index/FX/commodity tickers cannot carry a point
+    target because the false-precision penalty is large at the index level."""
+
+    def test_caret_prefix_is_index(self):
+        from tradingagents.agents.utils.decision_contracts import _ticker_class
+        assert _ticker_class("^NSEI") == "index"
+        assert _ticker_class("^GSPC") == "index"
+
+    def test_eurusd_is_fx(self):
+        from tradingagents.agents.utils.decision_contracts import _ticker_class
+        assert _ticker_class("EURUSD=X") == "fx"
+
+    def test_known_macro_rate_symbols_are_macro_rate(self):
+        from tradingagents.agents.utils.decision_contracts import _ticker_class
+        assert _ticker_class("^TNX") == "macro_rate"
+        assert _ticker_class("^IRX") == "macro_rate"
+        assert _ticker_class("DX-Y.NYB") == "macro_rate"
+
+    def test_futures_suffix_is_commodity_future(self):
+        from tradingagents.agents.utils.decision_contracts import _ticker_class
+        assert _ticker_class("CL=F") == "commodity_future"
+        assert _ticker_class("GC=F") == "commodity_future"
+
+    def test_indian_equity_is_equity(self):
+        from tradingagents.agents.utils.decision_contracts import _ticker_class
+        assert _ticker_class("PARACABLES.NS") == "equity"
+
+    def test_us_equity_is_equity(self):
+        from tradingagents.agents.utils.decision_contracts import _ticker_class
+        assert _ticker_class("AAPL") == "equity"
+
+
+@pytest.mark.unit
+class TestRangeValidator:
+    """Slice 4: validator drops range bounds when they are structurally
+    incoherent (one bound only, inverted, or inconsistent with the horizon
+    median) and emits a named note."""
+
+    def _ctx(self) -> PortfolioValidationContext:
+        return PortfolioValidationContext(
+            trade_date=_TRADE_DATE, latest_close=100.0, close_as_of=_TRADE_DATE,
+            annualised_volatility=0.20,
+        )
+
+    def test_incomplete_range_drops_both_with_note(self):
+        from tradingagents.agents.utils.decision_contracts import RANGE_INCOMPLETE
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=110.0,
+            target_basis="dcf",
+            target_range_low=105.0,
+            # target_range_high missing
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        assert result.decision.target_range_low is None
+        assert result.decision.target_range_high is None
+        assert any(RANGE_INCOMPLETE in n for n in result.notes)
+
+    def test_inverted_range_drops_both_with_note(self):
+        from tradingagents.agents.utils.decision_contracts import RANGE_INVERTED
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=110.0,
+            target_basis="dcf",
+            target_range_low=120.0,
+            target_range_high=105.0,
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        assert result.decision.target_range_low is None
+        assert result.decision.target_range_high is None
+        assert any(RANGE_INVERTED in n for n in result.notes)
+
+    def test_horizon_outside_range_drops_range_keeps_horizon(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            RANGE_INCONSISTENT_WITH_HORIZON,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=130.0,  # outside [105, 120]
+            target_basis="dcf",
+            target_range_low=105.0,
+            target_range_high=120.0,
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        # Range is dropped, horizon target preserved.
+        assert result.decision.target_range_low is None
+        assert result.decision.target_range_high is None
+        assert result.decision.price_target_horizon == 130.0
+        assert any(RANGE_INCONSISTENT_WITH_HORIZON in n for n in result.notes)
+
+    def test_valid_range_with_horizon_inside_is_preserved(self):
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=110.0,
+            target_basis="dcf",
+            target_range_low=105.0,
+            target_range_high=120.0,
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        assert result.decision.target_range_low == 105.0
+        assert result.decision.target_range_high == 120.0
+        assert result.decision.price_target_horizon == 110.0
+
+    def test_buy_range_low_below_close_drops_range(self):
+        """Range directional contract: a Buy with range_low BELOW close
+        means the bottom of the range is a Sell signal — drop the range."""
+        decision = _pm_decision(
+            rating=PortfolioRating.BUY,
+            price_target_horizon=115.0,
+            target_basis="dcf",
+            target_range_low=95.0,  # below close (100)
+            target_range_high=120.0,
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        assert result.decision.target_range_low is None
+        assert result.decision.target_range_high is None
+        assert any("TARGET_DIRECTION_VIOLATION" in n for n in result.notes)
+
+
+@pytest.mark.unit
+class TestTickerClassPointReject:
+    """Slice 4: index, FX, macro-rate, and commodity-future tickers cannot
+    carry a point target — the false-precision penalty is too large. The
+    range form (target_range_low/high) is required for these classes."""
+
+    def _ctx_with_class(self, ticker_class: str) -> PortfolioValidationContext:
+        return PortfolioValidationContext(
+            trade_date=_TRADE_DATE,
+            latest_close=100.0,
+            close_as_of=_TRADE_DATE,
+            annualised_volatility=0.20,
+            ticker_class=ticker_class,
+        )
+
+    def test_index_with_point_target_only_is_rejected(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            POINT_TARGET_INAPPROPRIATE,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=110.0,
+            target_basis="dcf",
+        )
+        result = validate_portfolio_decision(
+            decision, self._ctx_with_class("index"),
+        )
+        assert result.decision.price_target_horizon is None
+        assert result.decision.target_basis is None
+        assert any(POINT_TARGET_INAPPROPRIATE in n for n in result.notes)
+
+    def test_index_with_range_only_is_preserved(self):
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            target_range_low=108.0,
+            target_range_high=120.0,
+        )
+        result = validate_portfolio_decision(
+            decision, self._ctx_with_class("index"),
+        )
+        assert result.decision.target_range_low == 108.0
+        assert result.decision.target_range_high == 120.0
+
+    def test_index_with_point_and_range_drops_point_keeps_range(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            POINT_TARGET_INAPPROPRIATE,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=115.0,
+            target_basis="dcf",
+            target_range_low=108.0,
+            target_range_high=120.0,
+        )
+        result = validate_portfolio_decision(
+            decision, self._ctx_with_class("index"),
+        )
+        assert result.decision.price_target_horizon is None
+        assert result.decision.target_basis is None
+        assert result.decision.target_range_low == 108.0
+        assert result.decision.target_range_high == 120.0
+        assert any(POINT_TARGET_INAPPROPRIATE in n for n in result.notes)
+
+    def test_equity_with_point_target_only_is_preserved(self):
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=110.0,
+            target_basis="dcf",
+        )
+        result = validate_portfolio_decision(
+            decision, self._ctx_with_class("equity"),
+        )
+        assert result.decision.price_target_horizon == 110.0
+        assert result.decision.target_basis == "dcf"
+
+
+@pytest.mark.unit
+class TestRenderTargetRange:
+    """Slice 4: renderer surfaces the range form as ``**Target Range**:
+    <low> – <high>`` directly below the horizon target lines. Skipped when
+    the range is trivial (low == high == horizon)."""
+
+    def test_range_only_renders_target_range_line(self):
+        from tradingagents.agents.schemas import render_pm_decision
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            target_range_low=44.0,
+            target_range_high=75.0,
+        )
+        md = render_pm_decision(decision)
+        assert "**Target Range**: 44.0 – 75.0" in md
+
+    def test_range_with_horizon_renders_both_lines(self):
+        from tradingagents.agents.schemas import render_pm_decision
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=58.0,
+            target_range_low=44.0,
+            target_range_high=72.0,
+        )
+        md = render_pm_decision(decision)
+        assert "**Horizon Target**: 58.0" in md
+        assert "**Target Range**: 44.0 – 72.0" in md
+        # Order: Horizon Target / Target Range / Expected Return.
+        assert md.index("**Horizon Target**") < md.index("**Target Range**")
+
+    def test_trivial_range_does_not_render(self):
+        """When low == high == horizon, the range adds nothing — suppress it."""
+        from tradingagents.agents.schemas import render_pm_decision
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=58.0,
+            target_range_low=58.0,
+            target_range_high=58.0,
+        )
+        md = render_pm_decision(decision)
+        assert "**Target Range**" not in md
+
+    def test_no_range_no_target_range_line(self):
+        from tradingagents.agents.schemas import render_pm_decision
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=58.0,
+        )
+        md = render_pm_decision(decision)
+        assert "**Target Range**" not in md
+
+    def test_range_only_expected_return_uses_midpoint(self):
+        """When only the range is set (no horizon), Expected Return is
+        computed from the midpoint of the range so the reader still gets
+        a signed pct."""
+        from tradingagents.agents.schemas import render_pm_decision
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            target_range_low=100.0,
+            target_range_high=110.0,
+        )
+        md = render_pm_decision(decision, latest_close=100.0)
+        # Midpoint is 105 → +5%.
+        assert "**Expected Return**: +5.0%" in md
+
+
+def _full_sc(**overrides):
+    """Build a minimal EvidenceScorecard with explicit category scores."""
+    from tradingagents.agents.schemas import Confidence, EvidenceScorecard
+    base = dict(
+        bull_case=0, bear_case=0, trend_technical=0,
+        fundamental_quality=0, liquidity_risk=0, catalyst_clarity=0,
+        macro_regime=0, valuation=0,
+        confidence=Confidence.MEDIUM,
+        rating_rationale="r", invalidating_evidence="i",
+    )
+    base.update(overrides)
+    return EvidenceScorecard(**base)
+
+
+@pytest.mark.unit
+class TestTriangulationValidator:
+    """Slice 4: ``triangulate_portfolio_decision`` is the SOFT validator —
+    it never drops fields, only emits advisory notes when the scorecard,
+    rating, and target disagree about direction."""
+
+    def _ctx(self) -> PortfolioValidationContext:
+        return PortfolioValidationContext(
+            trade_date=_TRADE_DATE, latest_close=100.0, close_as_of=_TRADE_DATE,
+            annualised_volatility=0.20,
+        )
+
+    def test_strong_bullish_scorecard_with_hold_rating_emits_divergence(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            SCORECARD_RATING_DIVERGENCE,
+            triangulate_portfolio_decision,
+        )
+        # Net = +1+1+1+1+0+0+1+0 = +5 → strongly bullish.
+        sc = _full_sc(
+            bull_case=1, bear_case=1, trend_technical=1,
+            fundamental_quality=1, liquidity_risk=0, catalyst_clarity=0,
+            macro_regime=1, valuation=0,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.HOLD,
+            scorecard=sc,
+        )
+        result = triangulate_portfolio_decision(decision, self._ctx())
+        # Decision is not modified.
+        assert result.decision is decision or result.decision == decision
+        assert any(SCORECARD_RATING_DIVERGENCE in n for n in result.notes)
+
+    def test_strong_bearish_scorecard_with_buy_rating_emits_divergence(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            SCORECARD_RATING_DIVERGENCE,
+            triangulate_portfolio_decision,
+        )
+        # Net = -1-1-1-1-1+0-1+1 = -5 → strongly bearish.
+        sc = _full_sc(
+            bull_case=-1, bear_case=-1, trend_technical=-1,
+            fundamental_quality=-1, liquidity_risk=-1, catalyst_clarity=0,
+            macro_regime=-1, valuation=1,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.BUY,
+            scorecard=sc,
+        )
+        result = triangulate_portfolio_decision(decision, self._ctx())
+        assert any(SCORECARD_RATING_DIVERGENCE in n for n in result.notes)
+
+    def test_paracables_like_weak_net_with_hold_does_not_fire(self):
+        """PARACABLES: scorecard net = +1-1+1-1-2+0+1-1 = -2, Rating=Hold.
+        |net|=2 < 4 threshold → SOFT divergence must NOT fire."""
+        from tradingagents.agents.utils.decision_contracts import (
+            SCORECARD_RATING_DIVERGENCE,
+            triangulate_portfolio_decision,
+        )
+        sc = _full_sc(
+            bull_case=1, bear_case=-1, trend_technical=1,
+            fundamental_quality=-1, liquidity_risk=-2, catalyst_clarity=0,
+            macro_regime=1, valuation=-1,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.HOLD,
+            scorecard=sc,
+        )
+        result = triangulate_portfolio_decision(decision, self._ctx())
+        assert not any(SCORECARD_RATING_DIVERGENCE in n for n in result.notes)
+
+    def test_strong_bullish_scorecard_with_buy_rating_does_not_fire(self):
+        """Consistent: rating matches scorecard, no divergence."""
+        from tradingagents.agents.utils.decision_contracts import (
+            SCORECARD_RATING_DIVERGENCE,
+            triangulate_portfolio_decision,
+        )
+        sc = _full_sc(
+            bull_case=1, bear_case=1, trend_technical=1,
+            fundamental_quality=1, liquidity_risk=0, catalyst_clarity=0,
+            macro_regime=1, valuation=0,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.BUY,
+            scorecard=sc,
+        )
+        result = triangulate_portfolio_decision(decision, self._ctx())
+        assert not any(SCORECARD_RATING_DIVERGENCE in n for n in result.notes)
+
+    def test_no_scorecard_emits_no_notes(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            triangulate_portfolio_decision,
+        )
+        decision = _pm_decision(rating=PortfolioRating.HOLD)
+        result = triangulate_portfolio_decision(decision, self._ctx())
+        assert result.notes == []
+
+
+@pytest.mark.unit
+class TestRenderTriangulationNotes:
+    def test_empty_notes_render_empty_string(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            render_triangulation_notes,
+        )
+        assert render_triangulation_notes([]) == ""
+
+    def test_notes_render_with_advisory_header(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            render_triangulation_notes,
+        )
+        md = render_triangulation_notes(["SCORECARD_RATING_DIVERGENCE: ..."])
+        assert "**Triangulation Notes**" in md
+        assert "advisory" in md.lower()
+        assert "no fields modified" in md.lower()
+        assert "- SCORECARD_RATING_DIVERGENCE" in md
+
+
+@pytest.mark.unit
+class TestPortfolioManagerSlice4Wiring:
+    """Slice 4: end-to-end through ``create_portfolio_manager``.
+    Confirms the ticker-class is plumbed into the validator and the
+    soft triangulator is called after validation."""
+
+    def _state(self, ticker="^NSEI", latest_close=100.0):
+        from tradingagents.agents.utils.evidence_ledger import (
+            EvidenceFact,
+            EvidenceLedger,
+        )
+        ledger = EvidenceLedger(
+            ticker=ticker,
+            trade_date="2026-05-11",
+            latest_close=EvidenceFact(
+                value=latest_close, source="yfinance", as_of="2026-05-11",
+            ),
+        )
+        return {
+            "company_of_interest": ticker,
+            "trade_date": "2026-05-11",
+            "past_context": "",
+            "evidence_ledger": ledger,
+            "risk_debate_state": {
+                "history": "h",
+                "aggressive_history": "",
+                "conservative_history": "",
+                "neutral_history": "",
+                "judge_decision": "",
+                "current_aggressive_response": "",
+                "current_conservative_response": "",
+                "current_neutral_response": "",
+                "count": 1,
+            },
+            "investment_plan": "rp",
+            "trader_investment_plan": "tp",
+        }
+
+    def _llm_with_decision(self, decision: PortfolioDecision):
+        from unittest.mock import MagicMock
+        structured = MagicMock()
+        structured.invoke.return_value = decision
+        llm = MagicMock()
+        llm.with_structured_output.return_value = structured
+        return llm
+
+    def test_index_ticker_with_point_target_emits_point_target_inappropriate(self):
+        from tradingagents.agents.managers.portfolio_manager import (
+            create_portfolio_manager,
+        )
+        decision = PortfolioDecision(
+            rating=PortfolioRating.OVERWEIGHT,
+            executive_summary="s",
+            investment_thesis="t",
+            price_target_horizon=110.0,
+            target_basis="dcf",
+        )
+        llm = self._llm_with_decision(decision)
+        pm = create_portfolio_manager(llm)
+        result = pm(self._state(ticker="^NSEI", latest_close=100.0))
+        md = result["final_trade_decision"]
+        assert "POINT_TARGET_INAPPROPRIATE" in md
+
+    def test_strong_scorecard_hold_emits_triangulation_note(self):
+        from tradingagents.agents.managers.portfolio_manager import (
+            create_portfolio_manager,
+        )
+        sc = _full_sc(
+            bull_case=1, bear_case=1, trend_technical=1,
+            fundamental_quality=1, liquidity_risk=0, catalyst_clarity=0,
+            macro_regime=1, valuation=0,
+            tie_breaker="Balanced near-term; await catalyst.",
+        )
+        decision = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="s",
+            investment_thesis="t",
+            scorecard=sc,
+        )
+        llm = self._llm_with_decision(decision)
+        pm = create_portfolio_manager(llm)
+        result = pm(self._state(ticker="AAPL", latest_close=100.0))
+        md = result["final_trade_decision"]
+        assert "**Triangulation Notes**" in md
+        assert "SCORECARD_RATING_DIVERGENCE" in md

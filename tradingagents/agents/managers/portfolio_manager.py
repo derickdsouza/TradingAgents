@@ -29,7 +29,10 @@ from tradingagents.agents.utils.agent_utils import (
 from tradingagents.agents.utils.decision_contracts import (
     PortfolioValidationContext,
     _currency_from_ticker,
+    _ticker_class,
     render_pm_validation_notes,
+    render_triangulation_notes,
+    triangulate_portfolio_decision,
     validate_portfolio_decision,
 )
 from tradingagents.agents.utils.evidence_ledger import render_evidence_ledger
@@ -175,12 +178,18 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
         # cross-currency targets. Unsuffixed tickers default to USD.
         close_currency = _currency_from_ticker(state["company_of_interest"])
 
+        # Slice 4: derive the coarse instrument class from the ticker so
+        # the validator can reject point targets on indexes / FX / macro
+        # rates / commodity futures (POINT_TARGET_INAPPROPRIATE).
+        ticker_class = _ticker_class(state["company_of_interest"])
+
         validation_context = PortfolioValidationContext(
             trade_date=trade_date_dt,
             latest_close=latest_close,
             close_as_of=close_as_of,
             annualised_volatility=ledger_vol,
             close_currency=close_currency,
+            ticker_class=ticker_class,
         )
 
         def _validated_render(decision: PortfolioDecision) -> str:
@@ -200,7 +209,21 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
             validated = validate_portfolio_decision(decision, validation_context)
             md = render_pm_decision(validated.decision, latest_close=latest_close)
             footer = render_pm_validation_notes(validated.notes)
-            return f"{md}\n\n{footer}" if footer else md
+            # Slice 4: soft triangulation runs over the VALIDATED decision
+            # (so notes apply to the post-drop state, not the raw LLM
+            # output). The triangulator never modifies the decision; its
+            # footer surfaces advisory divergences distinct from the
+            # deterministic Validation Notes above.
+            triangulated = triangulate_portfolio_decision(
+                validated.decision, validation_context,
+            )
+            triangulation_footer = render_triangulation_notes(triangulated.notes)
+            parts = [md]
+            if footer:
+                parts.append(footer)
+            if triangulation_footer:
+                parts.append(triangulation_footer)
+            return "\n\n".join(parts)
 
         final_trade_decision = invoke_structured_or_freetext(
             structured_llm,
