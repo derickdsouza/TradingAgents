@@ -163,18 +163,23 @@ MODEL_OPTIONS: ProviderModeOptions = {
     # remote host. The actual resolved endpoint is surfaced separately by
     # cli.utils.confirm_ollama_endpoint() right after provider selection.
     # "Custom model ID" lets users pick any model they have pulled via
-    # `ollama pull` beyond the three suggested defaults.
+    # `ollama pull` beyond the curated defaults.
+    #
+    # Default is Qwen3.6:35b (frontier-quality coding/agent reasoning at
+    # ~20 GB), with Gemma4:31b as the fallback for diversity (different
+    # tokenizer + training data, useful when Qwen's tool-use grammar
+    # disagrees with a prompt). Both are large enough that the same
+    # model fits both quick and deep slots — there is no meaningful
+    # speed gap between them on local hardware.
     "ollama": {
         "quick": [
-            ("Qwen3:latest (8B)", "qwen3:latest"),
-            ("GPT-OSS:latest (20B)", "gpt-oss:latest"),
-            ("GLM-4.7-Flash:latest (30B)", "glm-4.7-flash:latest"),
+            ("Qwen3.6:35b - Default, frontier coding/agent reasoning", "qwen3.6:35b"),
+            ("Gemma4:31b - Fallback, alternate tokenizer/training", "gemma4:31b"),
             ("Custom model ID", "custom"),
         ],
         "deep": [
-            ("GLM-4.7-Flash:latest (30B)", "glm-4.7-flash:latest"),
-            ("GPT-OSS:latest (20B)", "gpt-oss:latest"),
-            ("Qwen3:latest (8B)", "qwen3:latest"),
+            ("Qwen3.6:35b - Default, frontier coding/agent reasoning", "qwen3.6:35b"),
+            ("Gemma4:31b - Fallback, alternate tokenizer/training", "gemma4:31b"),
             ("Custom model ID", "custom"),
         ],
     },
