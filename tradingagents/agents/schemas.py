@@ -47,6 +47,26 @@ class Confidence(str, Enum):
     HIGH = "High"
 
 
+class RatingTargetDisagreement(str, Enum):
+    """Named reasons the horizon target may legitimately contradict the rating.
+
+    Slice 3 of the PM decision contract introduces an explicit escape hatch
+    for contrarian positions that the directional rule would otherwise drop.
+    When set to anything other than ``NONE`` the validator suspends the
+    directional contract for that decision and surfaces the value as a
+    rendered ``Disagreement Rationale`` line. The vocabulary is closed so an
+    aggregator can count usage frequency across runs and flag overuse.
+    """
+
+    DIVIDEND_FLOOR = "dividend_floor"
+    QUALITY_PREMIUM = "quality_premium"
+    MOMENTUM_OVERRIDE = "momentum_override"
+    STRUCTURAL_OPTIONALITY = "structural_optionality"
+    MERGER_ARB_FLOOR = "merger_arb_floor"
+    CATALYST_NEUTRAL = "catalyst_neutral"
+    NONE = "none"
+
+
 # ---------------------------------------------------------------------------
 # Evidence Scorecard
 # ---------------------------------------------------------------------------
@@ -487,6 +507,47 @@ class PortfolioDecision(BaseModel):
             "evidence categories instead of only narrative synthesis."
         ),
     )
+    rating_target_disagreement: Optional[RatingTargetDisagreement] = Field(
+        default=None,
+        description=(
+            "Names a legitimate reason the horizon target may contradict the "
+            "rating direction. When set to anything other than 'none', the "
+            "directional contract is SUSPENDED for this decision and a "
+            "'Disagreement Rationale' line is rendered in the report. Use this "
+            "honestly: 'I'm worried' is NOT a valid disagreement — downgrade "
+            "the rating or use `pullback_zone` instead. Audit fires when this "
+            "is set on >5% of decisions. Allowed values: dividend_floor "
+            "(Hold/Buy with target below close because of dividend yield "
+            "support), quality_premium (Buy/Overweight despite target slightly "
+            "below close because of compounding quality), momentum_override "
+            "(Buy/Overweight on momentum despite stretched valuation), "
+            "structural_optionality (Hold with bearish target because of "
+            "takeover/breakup optionality), merger_arb_floor (Buy/Hold with "
+            "narrow upside because of deal-close arbitrage), catalyst_neutral "
+            "(target ≈ close because the position is a binary event play)."
+        ),
+    )
+    pullback_zone: Optional[float] = Field(
+        default=None,
+        description=(
+            "Optional NEAR-TERM retracement level the PM expects price to "
+            "visit BEFORE the horizon thesis plays out. Distinct from "
+            "`price_target_horizon` which is the END-OF-HORIZON expected "
+            "price. Must be below current close for long ratings "
+            "(Buy/Overweight/Hold with bullish lean); may be above close for "
+            "short ratings or for Hold-with-upside-then-pullback patterns. "
+            "Pair with `pullback_basis`."
+        ),
+    )
+    pullback_basis: Optional[str] = Field(
+        default=None,
+        description=(
+            "One-line label naming what `pullback_zone` is anchored to. "
+            "Controlled vocabulary: retest_breakout, fibonacci, "
+            "prior_consolidation, moving_average, vwap_anchor, support_zone. "
+            "ALWAYS populate when `pullback_zone` is set."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -555,6 +616,27 @@ def render_pm_decision(
             pct = (target - latest_close) / latest_close * 100.0
             sign = "+" if pct >= 0 else ""
             parts.extend(["", f"**Expected Return**: {sign}{pct:.1f}%"])
+    # Slice 3: pullback zone renders independently of the horizon target
+    # — a Hold-with-named-pullback may have no horizon target but still
+    # surface a defensible retracement level.
+    if decision.pullback_zone is not None:
+        pullback_line = f"**Pullback Zone**: {decision.pullback_zone}"
+        if decision.pullback_basis:
+            pullback_line += f" — _{decision.pullback_basis}_"
+        parts.extend(["", pullback_line])
+    # Slice 3: surface the disagreement rationale so the reader (and an
+    # aggregator counting usage) sees the named reason the directional
+    # contract was suspended. ``NONE`` is the explicit "no disagreement"
+    # value and is not rendered.
+    if (
+        decision.rating_target_disagreement is not None
+        and decision.rating_target_disagreement != RatingTargetDisagreement.NONE
+    ):
+        parts.extend([
+            "",
+            f"**Disagreement Rationale**: "
+            f"{decision.rating_target_disagreement.value}",
+        ])
     if decision.time_horizon:
         parts.extend(["", f"**Time Horizon**: {decision.time_horizon}"])
     if decision.scorecard is not None:

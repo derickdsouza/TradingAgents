@@ -316,7 +316,8 @@ class TestPortfolioContractRule1DirectionalContract:
         )
         result = validate_portfolio_decision(decision, self._ctx())
         assert result.decision.price_target_horizon == 105.0
-        assert result.decision.target_basis == "DCF"
+        # Slice 3: target_basis is normalised to canonical lowercase.
+        assert result.decision.target_basis == "dcf"
         assert result.notes == []
 
     def test_underweight_target_5pct_below_is_preserved(self):
@@ -329,9 +330,11 @@ class TestPortfolioContractRule1DirectionalContract:
         assert result.notes == []
 
     def test_hold_target_3pct_above_is_preserved(self):
+        # Slice 3: ``range midpoint`` is not in the controlled vocabulary;
+        # use the canonical ``range_bound`` token.
         decision = _pm_decision(
             rating=PortfolioRating.HOLD, price_target_horizon=103.0,
-            target_basis="range midpoint",
+            target_basis="range_bound",
         )
         result = validate_portfolio_decision(decision, self._ctx())
         assert result.decision.price_target_horizon == 103.0
@@ -653,7 +656,7 @@ class TestPortfolioContractVolatilityScaledHoldBand:
         decision = _pm_decision(
             rating=PortfolioRating.HOLD,
             price_target_horizon=118.0,
-            target_basis="range midpoint",
+            target_basis="range_bound",
         )
         result = validate_portfolio_decision(decision, self._ctx(vol=0.50))
         assert result.decision.price_target_horizon == 118.0
@@ -667,7 +670,7 @@ class TestPortfolioContractVolatilityScaledHoldBand:
         decision = _pm_decision(
             rating=PortfolioRating.HOLD,
             price_target_horizon=118.0,
-            target_basis="range midpoint",
+            target_basis="range_bound",
         )
         result = validate_portfolio_decision(decision, self._ctx(vol=0.08))
         assert result.decision.price_target_horizon is None
@@ -699,7 +702,7 @@ class TestPortfolioContractVolatilityScaledHoldBand:
         decision = _pm_decision(
             rating=PortfolioRating.HOLD,
             price_target_horizon=103.0,
-            target_basis="range midpoint",
+            target_basis="range_bound",
         )
         result = validate_portfolio_decision(decision, self._ctx(vol=None))
         assert result.decision.price_target_horizon == 103.0
@@ -730,7 +733,7 @@ class TestPortfolioContractBannedPlaceholder:
         decision = _pm_decision(
             rating=PortfolioRating.HOLD,
             price_target_horizon=100.0,
-            target_basis="range midpoint",
+            target_basis="range_bound",
         )
         result = validate_portfolio_decision(decision, self._ctx())
         assert result.decision.price_target_horizon is None
@@ -744,7 +747,7 @@ class TestPortfolioContractBannedPlaceholder:
         decision = _pm_decision(
             rating=PortfolioRating.HOLD,
             price_target_horizon=100.3,  # 0.3% above close
-            target_basis="range midpoint",
+            target_basis="range_bound",
         )
         result = validate_portfolio_decision(decision, self._ctx())
         assert result.decision.price_target_horizon is None
@@ -757,7 +760,7 @@ class TestPortfolioContractBannedPlaceholder:
         decision = _pm_decision(
             rating=PortfolioRating.HOLD,
             price_target_horizon=102.0,
-            target_basis="range midpoint",
+            target_basis="range_bound",
         )
         result = validate_portfolio_decision(decision, self._ctx())
         assert result.decision.price_target_horizon == 102.0
@@ -1019,7 +1022,7 @@ class TestPortfolioManagerSlice2Wiring:
             executive_summary="s",
             investment_thesis="t",
             price_target_horizon=118.0,
-            target_basis="range midpoint",
+            target_basis="range_bound",
         )
         pm = create_portfolio_manager(self._llm(decision))
         result = pm(self._state(ticker="AAPL", latest_close=100.0, vol=0.50))
@@ -1034,7 +1037,7 @@ class TestPortfolioManagerSlice2Wiring:
             executive_summary="s",
             investment_thesis="t",
             price_target_horizon=103.0,
-            target_basis="range midpoint",
+            target_basis="range_bound",
         )
         pm = create_portfolio_manager(self._llm(decision))
         result = pm(self._state(ticker="AAPL", latest_close=100.0, vol=None))
@@ -1042,3 +1045,591 @@ class TestPortfolioManagerSlice2Wiring:
         # Target inside ±10% so preserved, but informational note fires.
         assert "**Horizon Target**: 103.0" in md
         assert "HOLD_BAND_UNCALIBRATED" in md
+
+
+# ---------------------------------------------------------------------------
+# Slice 3: rating_target_disagreement enum, controlled-vocab bases,
+# pullback fields. Preserves contrarian PMs and pullback-aware Holds
+# without weakening the directional contract.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestRatingTargetDisagreementSchema:
+    """Slice 3: PortfolioDecision must accept the disagreement enum field."""
+
+    def test_disagreement_field_defaults_to_none(self):
+        decision = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="s",
+            investment_thesis="t",
+        )
+        assert decision.rating_target_disagreement is None
+
+    def test_disagreement_field_accepts_enum_value(self):
+        from tradingagents.agents.schemas import RatingTargetDisagreement
+        decision = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="s",
+            investment_thesis="t",
+            rating_target_disagreement=RatingTargetDisagreement.DIVIDEND_FLOOR,
+        )
+        assert decision.rating_target_disagreement == RatingTargetDisagreement.DIVIDEND_FLOOR
+
+    def test_disagreement_field_accepts_string_value(self):
+        from tradingagents.agents.schemas import RatingTargetDisagreement
+        decision = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="s",
+            investment_thesis="t",
+            rating_target_disagreement="quality_premium",
+        )
+        assert decision.rating_target_disagreement == RatingTargetDisagreement.QUALITY_PREMIUM
+
+
+@pytest.mark.unit
+class TestPullbackZoneSchema:
+    """Slice 3: PortfolioDecision must accept pullback_zone + pullback_basis."""
+
+    def test_pullback_fields_default_to_none(self):
+        decision = PortfolioDecision(
+            rating=PortfolioRating.BUY,
+            executive_summary="s",
+            investment_thesis="t",
+        )
+        assert decision.pullback_zone is None
+        assert decision.pullback_basis is None
+
+    def test_pullback_fields_accept_values(self):
+        decision = PortfolioDecision(
+            rating=PortfolioRating.BUY,
+            executive_summary="s",
+            investment_thesis="t",
+            pullback_zone=92.0,
+            pullback_basis="moving_average",
+        )
+        assert decision.pullback_zone == 92.0
+        assert decision.pullback_basis == "moving_average"
+
+
+@pytest.mark.unit
+class TestRatingTargetDisagreementValidator:
+    """Slice 3: setting rating_target_disagreement (non-none) suspends the
+    directional contract for the decision and emits the informational note."""
+
+    def _ctx(self) -> PortfolioValidationContext:
+        return PortfolioValidationContext(
+            trade_date=_TRADE_DATE,
+            latest_close=100.0,
+            close_as_of=_TRADE_DATE,
+            annualised_volatility=0.20,
+        )
+
+    def test_hold_with_negative_target_and_dividend_floor_is_preserved(self):
+        """Hold + target -13% would normally drop; with dividend_floor it survives."""
+        from tradingagents.agents.schemas import RatingTargetDisagreement
+        from tradingagents.agents.utils.decision_contracts import (
+            RATING_TARGET_DISAGREEMENT_SET,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.HOLD,
+            price_target_horizon=87.0,  # -13% from close 100
+            target_basis="dcf",
+            rating_target_disagreement=RatingTargetDisagreement.DIVIDEND_FLOOR,
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        assert result.decision.price_target_horizon == 87.0
+        assert result.decision.target_basis == "dcf"
+        assert any(RATING_TARGET_DISAGREEMENT_SET in n for n in result.notes)
+        # Critical: NOT a TARGET_DIRECTION_VIOLATION drop.
+        assert not any("TARGET_DIRECTION_VIOLATION" in n for n in result.notes)
+
+    def test_hold_with_negative_target_and_disagreement_none_is_still_dropped(self):
+        """Setting disagreement=none does NOT suspend the contract."""
+        from tradingagents.agents.schemas import RatingTargetDisagreement
+        decision = _pm_decision(
+            rating=PortfolioRating.HOLD,
+            price_target_horizon=87.0,
+            target_basis="dcf",
+            rating_target_disagreement=RatingTargetDisagreement.NONE,
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        assert result.decision.price_target_horizon is None
+        assert any("TARGET_DIRECTION_VIOLATION" in n for n in result.notes)
+
+    def test_overweight_with_negative_target_and_quality_premium_is_preserved(self):
+        from tradingagents.agents.schemas import RatingTargetDisagreement
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=97.0,  # -3% from close 100
+            target_basis="dcf",
+            rating_target_disagreement=RatingTargetDisagreement.QUALITY_PREMIUM,
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        assert result.decision.price_target_horizon == 97.0
+
+    def test_buy_with_negative_target_and_no_disagreement_is_dropped(self):
+        decision = _pm_decision(
+            rating=PortfolioRating.BUY,
+            price_target_horizon=90.0,
+            target_basis="dcf",
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        assert result.decision.price_target_horizon is None
+        assert any("TARGET_DIRECTION_VIOLATION" in n for n in result.notes)
+
+
+@pytest.mark.unit
+class TestTargetBasisVocabulary:
+    """Slice 3: target_basis must come from the controlled vocabulary;
+    case-insensitive match coerces to canonical lowercase."""
+
+    def _ctx(self) -> PortfolioValidationContext:
+        return PortfolioValidationContext(
+            trade_date=_TRADE_DATE,
+            latest_close=100.0,
+            close_as_of=_TRADE_DATE,
+            annualised_volatility=0.20,
+        )
+
+    def test_uppercase_dcf_is_coerced_to_lowercase_and_preserved(self):
+        decision = _pm_decision(
+            rating=PortfolioRating.BUY,
+            price_target_horizon=120.0,
+            target_basis="DCF",  # uppercase
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        assert result.decision.price_target_horizon == 120.0
+        assert result.decision.target_basis == "dcf"  # canonical
+
+    def test_unrecognised_basis_is_dropped_but_target_preserved(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            TARGET_BASIS_UNRECOGNISED,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.BUY,
+            price_target_horizon=120.0,
+            target_basis="thesis_break",  # not in vocabulary
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        # Target itself survives.
+        assert result.decision.price_target_horizon == 120.0
+        # But the bad basis is dropped.
+        assert result.decision.target_basis is None
+        assert any(TARGET_BASIS_UNRECOGNISED in n for n in result.notes)
+
+    def test_none_basis_emits_no_vocabulary_note(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            TARGET_BASIS_UNRECOGNISED,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.BUY,
+            price_target_horizon=120.0,
+            target_basis=None,
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        assert not any(TARGET_BASIS_UNRECOGNISED in n for n in result.notes)
+
+    def test_catalyst_neutral_basis_allows_target_equal_to_close(self):
+        """Slice 3 opt-out: target_basis=catalyst_neutral skips banned-placeholder."""
+        decision = _pm_decision(
+            rating=PortfolioRating.HOLD,
+            price_target_horizon=100.0,  # exactly equal to close
+            target_basis="catalyst_neutral",
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        assert result.decision.price_target_horizon == 100.0
+        assert result.decision.target_basis == "catalyst_neutral"
+        assert not any("TARGET_EQUALS_CLOSE" in n for n in result.notes)
+
+
+@pytest.mark.unit
+class TestPullbackZoneDirection:
+    """Slice 3: pullback_zone has its own directional rule.
+
+    Long ratings (Buy/Overweight): pullback sits below close.
+    Short ratings (Sell/Underweight): pullback sits above close.
+    Hold: either side allowed (Hold-with-bullish-lean is legitimate).
+    """
+
+    def _ctx(self) -> PortfolioValidationContext:
+        return PortfolioValidationContext(
+            trade_date=_TRADE_DATE,
+            latest_close=100.0,
+            close_as_of=_TRADE_DATE,
+            annualised_volatility=0.20,
+        )
+
+    def test_buy_with_pullback_below_close_is_preserved(self):
+        decision = _pm_decision(
+            rating=PortfolioRating.BUY,
+            price_target_horizon=120.0,
+            target_basis="dcf",
+            pullback_zone=92.0,
+            pullback_basis="moving_average",
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        assert result.decision.pullback_zone == 92.0
+        assert result.decision.pullback_basis == "moving_average"
+
+    def test_buy_with_pullback_above_close_is_dropped(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            PULLBACK_DIRECTION_VIOLATION,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.BUY,
+            price_target_horizon=120.0,
+            target_basis="dcf",
+            pullback_zone=105.0,  # ABOVE close → not a pullback for a long
+            pullback_basis="moving_average",
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        assert result.decision.pullback_zone is None
+        assert result.decision.pullback_basis is None
+        assert any(PULLBACK_DIRECTION_VIOLATION in n for n in result.notes)
+
+    def test_sell_with_pullback_below_close_is_dropped(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            PULLBACK_DIRECTION_VIOLATION,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.SELL,
+            price_target_horizon=80.0,
+            target_basis="dcf",
+            pullback_zone=95.0,  # BELOW close → not a pullback for a short
+            pullback_basis="moving_average",
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        assert result.decision.pullback_zone is None
+        assert any(PULLBACK_DIRECTION_VIOLATION in n for n in result.notes)
+
+    def test_hold_with_pullback_above_close_is_preserved(self):
+        """Hold-with-upside-then-pullback is legitimate; Hold allows either side."""
+        decision = _pm_decision(
+            rating=PortfolioRating.HOLD,
+            price_target_horizon=103.0,
+            target_basis="range_bound",
+            pullback_zone=105.0,
+            pullback_basis="prior_consolidation",
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        assert result.decision.pullback_zone == 105.0
+        assert result.decision.pullback_basis == "prior_consolidation"
+
+
+@pytest.mark.unit
+class TestPullbackBasisVocabulary:
+    """Slice 3: pullback_basis must come from the controlled vocabulary."""
+
+    def _ctx(self) -> PortfolioValidationContext:
+        return PortfolioValidationContext(
+            trade_date=_TRADE_DATE,
+            latest_close=100.0,
+            close_as_of=_TRADE_DATE,
+            annualised_volatility=0.20,
+        )
+
+    def test_unrecognised_pullback_basis_is_dropped(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            PULLBACK_BASIS_UNRECOGNISED,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.BUY,
+            price_target_horizon=120.0,
+            target_basis="dcf",
+            pullback_zone=92.0,
+            pullback_basis="thesis_break",  # not in vocabulary
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        # Pullback zone is preserved; basis is dropped (vocab fail leaves
+        # a defensible level surfaceable but strips the noisy label).
+        # Note: orphan-basis cleanup will then sweep nothing because the
+        # pullback_zone is still set after vocab clears the basis.
+        assert result.decision.pullback_basis is None
+        assert any(PULLBACK_BASIS_UNRECOGNISED in n for n in result.notes)
+
+    def test_uppercase_vwap_anchor_is_coerced_to_canonical(self):
+        decision = _pm_decision(
+            rating=PortfolioRating.BUY,
+            price_target_horizon=120.0,
+            target_basis="dcf",
+            pullback_zone=92.0,
+            pullback_basis="VWAP_ANCHOR",  # uppercase
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        assert result.decision.pullback_zone == 92.0
+        assert result.decision.pullback_basis == "vwap_anchor"
+
+    def test_orphan_pullback_basis_without_zone_is_cleared(self):
+        """An orphan pullback_basis (no paired zone) is swept like target_basis."""
+        decision = _pm_decision(
+            rating=PortfolioRating.HOLD,
+            pullback_zone=None,
+            pullback_basis="moving_average",
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        assert result.decision.pullback_basis is None
+
+
+@pytest.mark.unit
+class TestRenderPullbackAndDisagreementLines:
+    """Slice 3: render_pm_decision must emit ``Pullback Zone`` and
+    ``Disagreement Rationale`` lines when those fields are set."""
+
+    def test_pullback_zone_renders_with_basis_label(self):
+        from tradingagents.agents.schemas import render_pm_decision
+        decision = PortfolioDecision(
+            rating=PortfolioRating.BUY,
+            executive_summary="s",
+            investment_thesis="t",
+            price_target_horizon=120.0,
+            pullback_zone=92.0,
+            pullback_basis="moving_average",
+        )
+        md = render_pm_decision(decision, latest_close=100.0)
+        assert "**Pullback Zone**: 92.0" in md
+        assert "moving_average" in md
+
+    def test_no_pullback_zone_means_no_pullback_line(self):
+        from tradingagents.agents.schemas import render_pm_decision
+        decision = PortfolioDecision(
+            rating=PortfolioRating.BUY,
+            executive_summary="s",
+            investment_thesis="t",
+            price_target_horizon=120.0,
+        )
+        md = render_pm_decision(decision, latest_close=100.0)
+        assert "**Pullback Zone**" not in md
+
+    def test_disagreement_renders_as_named_line(self):
+        from tradingagents.agents.schemas import (
+            RatingTargetDisagreement,
+            render_pm_decision,
+        )
+        decision = PortfolioDecision(
+            rating=PortfolioRating.OVERWEIGHT,
+            executive_summary="s",
+            investment_thesis="t",
+            price_target_horizon=97.0,
+            rating_target_disagreement=RatingTargetDisagreement.QUALITY_PREMIUM,
+        )
+        md = render_pm_decision(decision, latest_close=100.0)
+        assert "**Disagreement Rationale**: quality_premium" in md
+
+    def test_disagreement_none_value_is_not_rendered(self):
+        from tradingagents.agents.schemas import (
+            RatingTargetDisagreement,
+            render_pm_decision,
+        )
+        decision = PortfolioDecision(
+            rating=PortfolioRating.BUY,
+            executive_summary="s",
+            investment_thesis="t",
+            price_target_horizon=120.0,
+            rating_target_disagreement=RatingTargetDisagreement.NONE,
+        )
+        md = render_pm_decision(decision, latest_close=100.0)
+        assert "**Disagreement Rationale**" not in md
+
+    def test_no_disagreement_means_no_line(self):
+        from tradingagents.agents.schemas import render_pm_decision
+        decision = PortfolioDecision(
+            rating=PortfolioRating.BUY,
+            executive_summary="s",
+            investment_thesis="t",
+            price_target_horizon=120.0,
+        )
+        md = render_pm_decision(decision, latest_close=100.0)
+        assert "**Disagreement Rationale**" not in md
+
+    def test_pullback_and_disagreement_order_after_expected_return(self):
+        from tradingagents.agents.schemas import (
+            RatingTargetDisagreement,
+            render_pm_decision,
+        )
+        decision = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="s",
+            investment_thesis="t",
+            price_target_horizon=103.0,
+            pullback_zone=92.0,
+            pullback_basis="moving_average",
+            rating_target_disagreement=RatingTargetDisagreement.DIVIDEND_FLOOR,
+            time_horizon="3-6 months",
+        )
+        md = render_pm_decision(decision, latest_close=100.0)
+        # Order: Horizon Target / Expected Return / Pullback Zone /
+        # Disagreement Rationale / Time Horizon.
+        assert md.index("**Horizon Target**") < md.index("**Expected Return**")
+        assert md.index("**Expected Return**") < md.index("**Pullback Zone**")
+        assert md.index("**Pullback Zone**") < md.index("**Disagreement Rationale**")
+        assert md.index("**Disagreement Rationale**") < md.index("**Time Horizon**")
+
+
+@pytest.mark.unit
+class TestDisagreementUsageMetric:
+    """Slice 3: expose a tiny helper that aggregators can call to track
+    rating_target_disagreement usage rate across runs. >5% is a smell."""
+
+    def test_usage_rate_counts_non_none_disagreements(self):
+        from tradingagents.agents.schemas import RatingTargetDisagreement
+        from tradingagents.agents.utils.decision_contracts import (
+            disagreement_usage_rate,
+        )
+        # 10 decisions, 1 with non-none disagreement → rate == 0.1.
+        decisions = []
+        for _ in range(9):
+            decisions.append(
+                ValidatedPortfolioDecision(
+                    decision=_pm_decision(rating=PortfolioRating.HOLD),
+                    notes=[],
+                )
+            )
+        decisions.append(
+            ValidatedPortfolioDecision(
+                decision=_pm_decision(
+                    rating=PortfolioRating.HOLD,
+                    rating_target_disagreement=RatingTargetDisagreement.DIVIDEND_FLOOR,
+                ),
+                notes=[],
+            )
+        )
+        assert disagreement_usage_rate(decisions) == 0.1
+
+    def test_usage_rate_treats_none_value_as_no_disagreement(self):
+        from tradingagents.agents.schemas import RatingTargetDisagreement
+        from tradingagents.agents.utils.decision_contracts import (
+            disagreement_usage_rate,
+        )
+        # Decisions whose disagreement field is the explicit NONE enum
+        # value must not be counted as "in use".
+        decisions = [
+            ValidatedPortfolioDecision(
+                decision=_pm_decision(
+                    rating=PortfolioRating.HOLD,
+                    rating_target_disagreement=RatingTargetDisagreement.NONE,
+                ),
+                notes=[],
+            )
+            for _ in range(5)
+        ]
+        assert disagreement_usage_rate(decisions) == 0.0
+
+    def test_usage_rate_empty_list_returns_zero(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            disagreement_usage_rate,
+        )
+        assert disagreement_usage_rate([]) == 0.0
+
+
+@pytest.mark.unit
+class TestPortfolioManagerSlice3Prompt:
+    """Slice 3: the PM prompt must carry the ``Price Target Semantics``
+    block so the model sees the controlled vocabularies and the explicit
+    rules about ``pullback_zone`` vs ``price_target_horizon`` vs
+    ``rating_target_disagreement``."""
+
+    def _state(self, ticker="AAPL", latest_close=100.0):
+        from tradingagents.agents.utils.evidence_ledger import (
+            EvidenceFact,
+            EvidenceLedger,
+        )
+        ledger = EvidenceLedger(
+            ticker=ticker,
+            trade_date="2026-05-11",
+            latest_close=EvidenceFact(
+                value=latest_close, source="yfinance", as_of="2026-05-11",
+            ),
+        )
+        return {
+            "company_of_interest": ticker,
+            "trade_date": "2026-05-11",
+            "past_context": "",
+            "evidence_ledger": ledger,
+            "risk_debate_state": {
+                "history": "h",
+                "aggressive_history": "",
+                "conservative_history": "",
+                "neutral_history": "",
+                "judge_decision": "",
+                "current_aggressive_response": "",
+                "current_conservative_response": "",
+                "current_neutral_response": "",
+                "count": 1,
+            },
+            "investment_plan": "rp",
+            "trader_investment_plan": "tp",
+        }
+
+    def _capturing_llm(self):
+        from unittest.mock import MagicMock
+        decision = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="s",
+            investment_thesis="t",
+        )
+        captured = {}
+        structured = MagicMock()
+
+        def _capture(prompt):
+            captured["prompt"] = prompt
+            return decision
+
+        structured.invoke.side_effect = _capture
+        llm = MagicMock()
+        llm.with_structured_output.return_value = structured
+        return llm, captured
+
+    def test_prompt_carries_price_target_semantics_block(self):
+        from tradingagents.agents.managers.portfolio_manager import (
+            create_portfolio_manager,
+        )
+        llm, captured = self._capturing_llm()
+        pm = create_portfolio_manager(llm)
+        pm(self._state())
+        prompt = captured["prompt"]
+        assert "Price Target Semantics" in prompt
+
+    def test_prompt_lists_target_basis_vocabulary(self):
+        from tradingagents.agents.managers.portfolio_manager import (
+            create_portfolio_manager,
+        )
+        llm, captured = self._capturing_llm()
+        pm = create_portfolio_manager(llm)
+        pm(self._state())
+        prompt = captured["prompt"]
+        # Every canonical token must appear so the model can pick from it.
+        for token in [
+            "base_case", "bear_case_skew", "mean_reversion", "range_bound",
+            "catalyst_neutral", "dcf", "peer_multiple", "peg_at_consensus",
+            "technical_measured_move",
+        ]:
+            assert token in prompt, f"missing target_basis token: {token}"
+
+    def test_prompt_lists_pullback_basis_vocabulary(self):
+        from tradingagents.agents.managers.portfolio_manager import (
+            create_portfolio_manager,
+        )
+        llm, captured = self._capturing_llm()
+        pm = create_portfolio_manager(llm)
+        pm(self._state())
+        prompt = captured["prompt"]
+        for token in [
+            "retest_breakout", "fibonacci", "prior_consolidation",
+            "moving_average", "vwap_anchor", "support_zone",
+        ]:
+            assert token in prompt, f"missing pullback_basis token: {token}"
+
+    def test_prompt_lists_disagreement_vocabulary(self):
+        from tradingagents.agents.managers.portfolio_manager import (
+            create_portfolio_manager,
+        )
+        llm, captured = self._capturing_llm()
+        pm = create_portfolio_manager(llm)
+        pm(self._state())
+        prompt = captured["prompt"]
+        for token in [
+            "dividend_floor", "quality_premium", "momentum_override",
+            "structural_optionality", "merger_arb_floor",
+        ]:
+            assert token in prompt, f"missing disagreement token: {token}"

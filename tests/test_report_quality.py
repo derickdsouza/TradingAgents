@@ -603,16 +603,18 @@ class TestPortfolioDecisionContractsRegression:
         )
         result = validate_portfolio_decision(decision, _pm_ctx())
         assert result.decision.price_target_horizon == 105.0
-        assert result.decision.target_basis == "DCF"
+        # Slice 3: target_basis is normalised to canonical lowercase.
+        assert result.decision.target_basis == "dcf"
         assert not result.changed
 
     def test_hold_target_3pct_above_close_is_preserved(self):
+        # Slice 3: ``range_bound`` is the canonical vocab token.
         decision = PortfolioDecision(
             rating=PortfolioRating.HOLD,
             executive_summary="Hold the line; reassess on earnings.",
             investment_thesis="Balanced.",
             price_target_horizon=103.0,
-            target_basis="range midpoint",
+            target_basis="range_bound",
         )
         result = validate_portfolio_decision(decision, _pm_ctx())
         assert result.decision.price_target_horizon == 103.0
@@ -690,3 +692,46 @@ class TestPortfolioDecisionContractsRegression:
         assert "**Horizon Target**: 120.0" not in full
         assert "**Expected Return**" not in full
         assert TARGET_CURRENCY_MISMATCH in full
+
+    def test_slice3_overweight_with_negative_target_and_quality_premium_renders_rationale(self):
+        """Slice 3 end-to-end: Overweight + target -3% would normally drop,
+        but a named ``quality_premium`` disagreement preserves both the
+        target and a labelled ``Disagreement Rationale`` line."""
+        from tradingagents.agents.schemas import RatingTargetDisagreement
+        decision = PortfolioDecision(
+            rating=PortfolioRating.OVERWEIGHT,
+            executive_summary="Maintain overweight despite minor target gap.",
+            investment_thesis="Quality compounder; gap reflects valuation, not thesis break.",
+            price_target_horizon=97.0,  # -3% from close 100
+            target_basis="quality_premium",  # not in target_basis vocab → dropped
+            rating_target_disagreement=RatingTargetDisagreement.QUALITY_PREMIUM,
+        )
+        result = validate_portfolio_decision(decision, _pm_ctx(latest_close=100.0))
+        md = render_pm_decision(result.decision, latest_close=100.0)
+        footer = render_pm_validation_notes(result.notes)
+        full = f"{md}\n\n{footer}"
+        # Target preserved (contract suspended).
+        assert "**Horizon Target**: 97.0" in full
+        # Rationale rendered as a labelled line.
+        assert "**Disagreement Rationale**: quality_premium" in full
+        # Directional violation NOT in notes (contract was suspended).
+        assert "TARGET_DIRECTION_VIOLATION" not in full
+
+    def test_slice3_hold_with_named_pullback_renders_three_lines(self):
+        """Slice 3 end-to-end: Hold + target +3% + pullback below close +
+        canonical pullback_basis → markdown carries all three lines."""
+        decision = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="Hold; expect a retrace to the 50-DMA first.",
+            investment_thesis="Setup intact but extended near-term.",
+            price_target_horizon=103.0,
+            target_basis="range_bound",
+            pullback_zone=90.0,
+            pullback_basis="moving_average",
+        )
+        result = validate_portfolio_decision(decision, _pm_ctx(latest_close=100.0))
+        md = render_pm_decision(result.decision, latest_close=100.0)
+        assert "**Horizon Target**: 103.0" in md
+        assert "**Expected Return**: +3.0%" in md
+        assert "**Pullback Zone**: 90.0" in md
+        assert "moving_average" in md

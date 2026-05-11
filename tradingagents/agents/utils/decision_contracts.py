@@ -34,6 +34,7 @@ from typing import Optional
 from tradingagents.agents.schemas import (
     PortfolioDecision,
     PortfolioRating,
+    RatingTargetDisagreement,
     TraderAction,
     TraderProposal,
 )
@@ -56,6 +57,36 @@ TARGET_ORPHAN_BASIS = "TARGET_ORPHAN_BASIS"
 HOLD_BAND_UNCALIBRATED = "HOLD_BAND_UNCALIBRATED"
 TARGET_EQUALS_CLOSE = "TARGET_EQUALS_CLOSE"
 TARGET_CURRENCY_MISMATCH = "TARGET_CURRENCY_MISMATCH"
+
+# Slice 3 additions.
+RATING_TARGET_DISAGREEMENT_SET = "RATING_TARGET_DISAGREEMENT_SET"
+TARGET_BASIS_UNRECOGNISED = "TARGET_BASIS_UNRECOGNISED"
+PULLBACK_BASIS_UNRECOGNISED = "PULLBACK_BASIS_UNRECOGNISED"
+PULLBACK_DIRECTION_VIOLATION = "PULLBACK_DIRECTION_VIOLATION"
+
+# Slice 3 controlled vocabularies. Enforced post-parse so the schema stays
+# simple (free-text fields) and vocabulary failures surface as named notes
+# alongside the rest of the structural checks.
+ALLOWED_TARGET_BASIS: frozenset[str] = frozenset({
+    "base_case",
+    "bear_case_skew",
+    "mean_reversion",
+    "range_bound",
+    "catalyst_neutral",
+    "dcf",
+    "peer_multiple",
+    "peg_at_consensus",
+    "technical_measured_move",
+})
+
+ALLOWED_PULLBACK_BASIS: frozenset[str] = frozenset({
+    "retest_breakout",
+    "fibonacci",
+    "prior_consolidation",
+    "moving_average",
+    "vwap_anchor",
+    "support_zone",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +436,22 @@ def validate_portfolio_decision(
     cleaned = decision.model_copy()
     notes: list[str] = []
 
+    # Slice 3: a non-none ``rating_target_disagreement`` is the explicit
+    # escape hatch for legitimate contrarian positions. When set, the
+    # banned-placeholder (rule 3) and directional contract (rule 4) checks
+    # are SKIPPED for this decision; an informational note is emitted so
+    # the rendered footer surfaces the rationale.
+    disagreement = cleaned.rating_target_disagreement
+    contract_suspended = (
+        disagreement is not None
+        and disagreement != RatingTargetDisagreement.NONE
+    )
+    if contract_suspended:
+        notes.append(
+            f"{RATING_TARGET_DISAGREEMENT_SET}: directional contract "
+            f"suspended — rating_target_disagreement={disagreement.value}."
+        )
+
     # Rule 1: loud-fail when the reference close is missing or stale.
     if cleaned.price_target_horizon is not None and _close_is_stale(context):
         original = cleaned.price_target_horizon
@@ -439,12 +486,18 @@ def validate_portfolio_decision(
 
     # Rule 3 (Slice 2): banned placeholder — target within 0.5% of close
     # is statistical noise / a placeholder, not a defensible horizon
-    # level. Slice 3 will add a ``catalyst_neutral`` opt-out via a
-    # controlled-vocab ``target_basis``; Slice 2 has no opt-out.
+    # level. Slice 3 adds two opt-outs: (a) ``target_basis ==
+    # 'catalyst_neutral'`` for explicit binary-event positions where
+    # target ≈ close is intentional, and (b) any non-none
+    # ``rating_target_disagreement`` (the contract is already suspended).
+    target_basis_lc = (cleaned.target_basis or "").strip().lower()
+    catalyst_neutral_opt_out = target_basis_lc == "catalyst_neutral"
     if (
         cleaned.price_target_horizon is not None
         and context.latest_close is not None
         and context.latest_close > 0
+        and not contract_suspended
+        and not catalyst_neutral_opt_out
     ):
         rel = abs(cleaned.price_target_horizon - context.latest_close) / context.latest_close
         if rel < _TARGET_PLACEHOLDER_EPSILON:
@@ -458,10 +511,14 @@ def validate_portfolio_decision(
                 f"not a defensible horizon target."
             )
 
-    # Rule 4: directional contract against latest_close.
+    # Rule 4: directional contract against latest_close. Slice 3:
+    # SUSPENDED when ``rating_target_disagreement`` is set to a non-none
+    # value — the PM has explicitly named a reason the target may
+    # contradict the rating direction.
     if (
         cleaned.price_target_horizon is not None
         and context.latest_close is not None
+        and not contract_suspended
     ):
         close = context.latest_close
         target = cleaned.price_target_horizon
@@ -520,17 +577,128 @@ def validate_portfolio_decision(
             cleaned.target_basis = None
             notes.append(f"{TARGET_DIRECTION_VIOLATION}: {violation}")
 
-    # Rule 5: orphan basis cleanup. Runs last so it sweeps any basis
+    # Rule 5 (Slice 3): basis vocabulary validation. Coerce recognised
+    # values to canonical lowercase; drop unrecognised values with a
+    # named note. The target itself is preserved when only the basis is
+    # bad — a defensible target with a noisy basis is still surfaceable.
+    if cleaned.target_basis is not None:
+        canonical, ok = _normalise_basis(cleaned.target_basis, ALLOWED_TARGET_BASIS)
+        if ok:
+            cleaned.target_basis = canonical
+        else:
+            original = cleaned.target_basis
+            cleaned.target_basis = None
+            notes.append(
+                f"{TARGET_BASIS_UNRECOGNISED}: target_basis '{original}' "
+                f"dropped — not in the controlled vocabulary "
+                f"({sorted(ALLOWED_TARGET_BASIS)})."
+            )
+
+    if cleaned.pullback_basis is not None:
+        canonical, ok = _normalise_basis(
+            cleaned.pullback_basis, ALLOWED_PULLBACK_BASIS,
+        )
+        if ok:
+            cleaned.pullback_basis = canonical
+        else:
+            original = cleaned.pullback_basis
+            cleaned.pullback_basis = None
+            notes.append(
+                f"{PULLBACK_BASIS_UNRECOGNISED}: pullback_basis '{original}' "
+                f"dropped — not in the controlled vocabulary "
+                f"({sorted(ALLOWED_PULLBACK_BASIS)})."
+            )
+
+    # Rule 6 (Slice 3): pullback direction. Long ratings expect the
+    # pullback to sit BELOW the close (a retracement before continuation);
+    # short ratings expect ABOVE; Hold allows either side because a
+    # Hold-with-bullish-lean-then-pullback pattern is legitimate. When
+    # ``latest_close`` is missing we skip the directional check (mirrors
+    # the trader-validator policy on missing close).
+    if (
+        cleaned.pullback_zone is not None
+        and context.latest_close is not None
+    ):
+        close = context.latest_close
+        pullback = cleaned.pullback_zone
+        rating = cleaned.rating
+        pullback_violation: Optional[str] = None
+        if rating in _BULLISH_RATINGS and pullback >= close:
+            pullback_violation = (
+                f"pullback {pullback} is not below close {close} for a "
+                f"{rating.value} rating — pullbacks on long ratings sit "
+                f"below the current price."
+            )
+        elif rating in _BEARISH_RATINGS and pullback <= close:
+            pullback_violation = (
+                f"pullback {pullback} is not above close {close} for a "
+                f"{rating.value} rating — pullbacks on short ratings sit "
+                f"above the current price."
+            )
+        if pullback_violation is not None:
+            cleaned.pullback_zone = None
+            cleaned.pullback_basis = None
+            notes.append(f"{PULLBACK_DIRECTION_VIOLATION}: {pullback_violation}")
+
+    # Rule 7: orphan basis cleanup. Runs last so it sweeps any basis
     # orphaned by the earlier drops (currency mismatch, placeholder,
-    # direction).
+    # direction, vocabulary, pullback-direction).
     if cleaned.price_target_horizon is None and cleaned.target_basis:
         cleaned.target_basis = None
         notes.append(
             f"{TARGET_ORPHAN_BASIS}: target_basis dropped — orphan basis "
             f"without a paired price_target_horizon value."
         )
+    if cleaned.pullback_zone is None and cleaned.pullback_basis:
+        cleaned.pullback_basis = None
+        notes.append(
+            f"{TARGET_ORPHAN_BASIS}: pullback_basis dropped — orphan basis "
+            f"without a paired pullback_zone value."
+        )
 
     return ValidatedPortfolioDecision(decision=cleaned, notes=notes)
+
+
+def _normalise_basis(
+    value: Optional[str], allowed: frozenset[str],
+) -> tuple[Optional[str], bool]:
+    """Coerce a basis string to its canonical lowercase form if recognised.
+
+    Returns ``(canonical_or_None, was_in_vocab)``. The case-insensitive
+    match lets the model emit "DCF" and have it accepted as "dcf";
+    unrecognised values surface as a named note in the caller rather than
+    sneaking into the rendered report.
+    """
+    if value is None:
+        return None, True
+    canonical = value.strip().lower()
+    if canonical in allowed:
+        return canonical, True
+    return None, False
+
+
+def disagreement_usage_rate(
+    decisions: list[ValidatedPortfolioDecision],
+) -> float:
+    """Fraction of validated decisions where the contract is suspended.
+
+    "Suspended" means ``rating_target_disagreement`` is set to a value
+    other than ``RatingTargetDisagreement.NONE``. Returns 0.0 for an empty
+    list. Aggregators run this across a backtest or eval batch and treat
+    rates above ~5% as a smell: too many "contrarian" decisions usually
+    means the PM is dodging the directional rule rather than honestly
+    naming a legitimate divergence.
+    """
+    if not decisions:
+        return 0.0
+    flagged = sum(
+        1
+        for v in decisions
+        if v.decision.rating_target_disagreement is not None
+        and v.decision.rating_target_disagreement
+        != RatingTargetDisagreement.NONE
+    )
+    return flagged / len(decisions)
 
 
 def render_pm_validation_notes(notes: list[str]) -> str:

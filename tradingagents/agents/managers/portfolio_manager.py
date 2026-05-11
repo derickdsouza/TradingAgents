@@ -108,6 +108,20 @@ def create_portfolio_manager(llm):
 - **Underweight**: Reduce exposure, take partial profits
 - **Sell**: Exit position or avoid entry
 
+**Price Target Semantics:**
+- `price_target_horizon` answers: "If my rating plays out over the stated `time_horizon`, where is the price?" It MUST point the same direction as the rating: above current close for Buy/Overweight (≥3% above), below for Sell/Underweight (≥3% below), within a volatility-scaled band for Hold (typically ±5-20% depending on the underlying's volatility).
+- `pullback_zone` answers: "Before that horizon target is reached, do I expect a meaningful retracement first?" If yes, name the level and its basis. If no, leave NULL. NEVER use this field as a substitute for `price_target_horizon`.
+- `rating_target_disagreement` is the explicit escape hatch for legitimate contrarian positions: a Hold with a -15% target for a dividend-floor stock is fine if you name the reason. "I'm worried" is NOT a valid reason — downgrade the rating or use `pullback_zone` instead.
+- Controlled vocabularies (use exactly these tokens):
+  - `target_basis`: base_case, bear_case_skew, mean_reversion, range_bound, catalyst_neutral, dcf, peer_multiple, peg_at_consensus, technical_measured_move
+  - `pullback_basis`: retest_breakout, fibonacci, prior_consolidation, moving_average, vwap_anchor, support_zone
+  - `rating_target_disagreement`: dividend_floor, quality_premium, momentum_override, structural_optionality, merger_arb_floor, catalyst_neutral, none
+
+Anti-patterns the validator will reject:
+- Hold with target below close as a placeholder for "I'm worried" → either downgrade the rating, use `pullback_zone`, or set `rating_target_disagreement`.
+- `price_target_horizon` equal to current close → asserts zero expected drift over the horizon. Use a basis of `catalyst_neutral` if intentional.
+- Setting `price_target_horizon` to the Trader's stop-out level → stops belong to the Trader; the horizon target is your independent view of where price ENDS.
+
 **Evidence Scorecard** — populate the structured `scorecard` field by scoring each named category on a -2 (strongly bearish) to +2 (strongly bullish) scale, with 0 meaning insufficient or balanced evidence. Categories: Bull Case, Bear Case, Trend / Technical, Fundamental Quality, Liquidity / Risk, Catalyst Clarity, Macro / Regime, Valuation. Set Confidence (Low / Medium / High) and write a one-to-two-sentence `rating_rationale` showing how the scorecard maps to the final rating. For Buy / Sell, name the specific evidence in `invalidating_evidence` that would downgrade or upgrade the call. For Hold, the `tie_breaker` field is REQUIRED — explain why the evidence is genuinely balanced rather than indecisive, and what would break the balance.
 
 **Context:**
