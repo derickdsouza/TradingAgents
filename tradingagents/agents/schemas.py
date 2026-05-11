@@ -567,6 +567,34 @@ class PortfolioDecision(BaseModel):
             "ALWAYS populate when `pullback_zone` is set."
         ),
     )
+    target_committed_at: Optional[str] = Field(
+        default=None,
+        description=(
+            "ISO date (YYYY-MM-DD) when ``price_target_horizon`` was first "
+            "published. Snapshotted by the renderer from ``state['trade_date']`` "
+            "— NEVER set by the LLM. Used by Slice 5's target-drift validator "
+            "on subsequent runs to detect a stale carry-forward target."
+        ),
+    )
+    committed_close: Optional[float] = Field(
+        default=None,
+        description=(
+            "Latest close at the moment ``target_committed_at`` was "
+            "snapshotted. Snapshotted by the renderer — NEVER set by the "
+            "LLM. Used by ``validate_target_drift`` on subsequent runs to "
+            "compute how far the current close has drifted from the price "
+            "at which the target was originally committed."
+        ),
+    )
+    target_drift_threshold_pct: Optional[float] = Field(
+        default=0.15,
+        description=(
+            "Fractional drift threshold (default 0.15 = 15%). When "
+            "``|current_close - committed_close| / committed_close`` exceeds "
+            "this value on the next run, the PM is required to reaffirm or "
+            "revise the target rather than carry it forward implicitly."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -631,6 +659,22 @@ def render_pm_decision(
             target_line += f" — _{decision.target_basis}_"
             horizon_line += f" — _{decision.target_basis}_"
         parts.extend(["", target_line, "", horizon_line])
+        # Slice 5: target vintage. Surfacing the committed-at date and the
+        # close at commit time lets the reader (and any aggregator) see how
+        # fresh the target is and triggers the drift-reaffirmation directive
+        # on the NEXT run when the current close has moved off the
+        # committed close. Rendered only when BOTH fields are present —
+        # neither field alone is meaningful.
+        if (
+            decision.target_committed_at is not None
+            and decision.committed_close is not None
+        ):
+            parts.extend([
+                "",
+                f"**Target Vintage**: committed "
+                f"{decision.target_committed_at} at "
+                f"{decision.committed_close}",
+            ])
     # Slice 4: Target Range line renders directly below the horizon target
     # when both bounds are set AND the range is non-trivial (i.e. bounds
     # differ from each other and from the horizon, when present). A trivial

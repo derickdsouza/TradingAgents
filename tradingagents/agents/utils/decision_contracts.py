@@ -72,6 +72,9 @@ POINT_TARGET_INAPPROPRIATE = "POINT_TARGET_INAPPROPRIATE"
 SCORECARD_RATING_DIVERGENCE = "SCORECARD_RATING_DIVERGENCE"
 SCORECARD_TARGET_DIVERGENCE = "SCORECARD_TARGET_DIVERGENCE"
 
+# Slice 5 additions (target-drift tracking across reports).
+TARGET_DRIFT_THRESHOLD_EXCEEDED = "TARGET_DRIFT_THRESHOLD_EXCEEDED"
+
 # Slice 3 controlled vocabularies. Enforced post-parse so the schema stays
 # simple (free-text fields) and vocabulary failures surface as named notes
 # alongside the rest of the structural checks.
@@ -1057,3 +1060,58 @@ def render_triangulation_notes(notes: list[str]) -> str:
     lines = ["**Triangulation Notes** (advisory; no fields modified):"]
     lines.extend(f"- {note}" for note in notes)
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Slice 5: target-drift tracking across runs.
+#
+# Slices 1-4 enforce the contract WITHIN a single PM run. The failure mode
+# this slice catches is across runs: a PM publishes a target at close 50,
+# re-runs two weeks later at close 58 (+16% drift), and silently carries
+# the original target forward. The validator returns an LLM-facing
+# DIRECTIVE string (not a Validation Notes entry) so the PM node can
+# inject it into the prompt for the new run — the corrective action is
+# the LLM's, not the validator's.
+# ---------------------------------------------------------------------------
+
+
+def validate_target_drift(
+    prior_decision: PortfolioDecision,
+    current_close: Optional[float],
+) -> Optional[str]:
+    """Return a prompt directive if the current close has drifted beyond threshold.
+
+    Returns ``None`` and skips the check when any of:
+
+    - ``prior_decision.committed_close`` is None (the prior decision did
+      not snapshot a vintage — nothing to compare against).
+    - ``current_close`` is None (no reference price for the current run).
+    - ``prior_decision.target_drift_threshold_pct`` is None (the PM
+      explicitly disabled the drift check on the prior run).
+
+    Returns a directive STRING when ``|current_close - committed_close| /
+    committed_close`` exceeds the threshold. The directive is meant to be
+    injected into the NEXT PM run's prompt under a ``**Drift Reaffirmation
+    Required:**`` block so the LLM cannot silently carry the old target
+    forward.
+    """
+    committed_close = prior_decision.committed_close
+    threshold = prior_decision.target_drift_threshold_pct
+    if committed_close is None or current_close is None or threshold is None:
+        return None
+    if committed_close == 0:
+        return None
+    drift = (current_close - committed_close) / committed_close
+    if abs(drift) <= threshold:
+        return None
+    return (
+        f"ATTENTION: The previous PM target was "
+        f"{prior_decision.price_target_horizon} committed on "
+        f"{prior_decision.target_committed_at} at price "
+        f"{committed_close}. The current latest_close is "
+        f"{current_close}, a drift of {drift:+.1%}, which EXCEEDS "
+        f"the {threshold:.0%} threshold. You MUST either explicitly "
+        f"REAFFIRM the {prior_decision.price_target_horizon} target with "
+        f"fresh justification, or REVISE it. Do NOT carry it forward "
+        f"implicitly."
+    )

@@ -23,6 +23,7 @@ class GraphSetup:
         tool_nodes: Dict[str, ToolNode],
         conditional_logic: ConditionalLogic,
         output_stage: str = "full",
+        memory_log: Any = None,
     ):
         """Initialize with required components.
 
@@ -31,6 +32,13 @@ class GraphSetup:
                         risk debate → portfolio manager → END (default)
         - ``"research"`` → analysts → bull/bear → research manager → END
                         (no trader, no risk debate, no PM)
+
+        ``memory_log`` is plumbed into the Portfolio Manager so cross-run
+        target-drift can be detected — the PM node looks up the most
+        recent prior decision for the ticker and injects a
+        reaffirm-or-revise directive when the close has moved past the
+        threshold the prior run committed to. ``None`` (default) disables
+        the cross-run check.
         """
         if output_stage not in OUTPUT_STAGES:
             raise ValueError(
@@ -41,6 +49,7 @@ class GraphSetup:
         self.tool_nodes = tool_nodes
         self.conditional_logic = conditional_logic
         self.output_stage = output_stage
+        self.memory_log = memory_log
 
     def setup_graph(
         self, selected_analysts=["market", "social", "news", "fundamentals"]
@@ -107,7 +116,10 @@ class GraphSetup:
             aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
             neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
             conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
-            portfolio_manager_node = create_portfolio_manager(self.deep_thinking_llm)
+            portfolio_manager_node = create_portfolio_manager(
+                self.deep_thinking_llm,
+                memory_log=self.memory_log,
+            )
 
         # Create workflow
         workflow = StateGraph(AgentState)

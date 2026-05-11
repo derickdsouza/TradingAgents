@@ -125,6 +125,7 @@ class TradingAgentsGraph:
             self.tool_nodes,
             self.conditional_logic,
             output_stage=self.output_stage,
+            memory_log=self.memory_log,
         )
 
         self.propagator = Propagator(

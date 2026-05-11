@@ -781,3 +781,77 @@ class TestPortfolioDecisionContractsRegression:
         md = render_triangulation_notes(triangulated.notes)
         assert "**Triangulation Notes**" in md
         assert "SCORECARD_RATING_DIVERGENCE" in md
+
+
+class TestSlice5DriftCarryForwardRegression:
+    """End-to-end regression fixture for the cross-run drift failure mode.
+
+    Slice 5 pins the carry-forward scenario the bead description names:
+    a PM commits a target at close 50; two weeks later the close is 58
+    (+16% drift) and the prior target is still being carried forward
+    unchanged. The Slice 5 wiring snapshots the vintage on the first
+    run and forces the second run to either REAFFIRM or REVISE.
+
+    These tests live in the regression harness so any future rebase or
+    refactor that quietly disables the vintage snapshot or the drift
+    directive trips a named, visible failure here.
+    """
+
+    def test_rendered_decision_with_target_carries_vintage_block(self):
+        """A shipped decision with a horizon target must render a
+        ``**Target Vintage**`` line — that line is what the next run
+        parses to compute drift."""
+        decision = PortfolioDecision(
+            rating=PortfolioRating.BUY,
+            executive_summary="Accumulate ahead of catalyst.",
+            investment_thesis="Setup intact.",
+            price_target_horizon=60.0,
+            target_basis="dcf",
+            target_committed_at="2026-04-27",
+            committed_close=50.0,
+        )
+        md = render_pm_decision(decision, latest_close=50.0)
+        # Vintage line present.
+        assert "**Target Vintage**: committed 2026-04-27 at 50.0" in md
+        # Sits directly below the horizon target line.
+        assert md.index("**Horizon Target**") < md.index("**Target Vintage**")
+
+    def test_drift_directive_string_carries_diagnostics(self):
+        """The directive returned by ``validate_target_drift`` must
+        carry the prior target, the prior commit-date, the committed
+        close, the current close, the signed drift pct, and the
+        threshold pct — so the LLM sees the full picture."""
+        from tradingagents.agents.utils.decision_contracts import (
+            validate_target_drift,
+        )
+        prior = PortfolioDecision(
+            rating=PortfolioRating.BUY,
+            executive_summary="prior",
+            investment_thesis="prior",
+            price_target_horizon=60.0,
+            target_committed_at="2026-04-27",
+            committed_close=50.0,
+        )
+        directive = validate_target_drift(prior, current_close=58.0)
+        assert directive is not None
+        assert "60.0" in directive
+        assert "2026-04-27" in directive
+        assert "50.0" in directive or "50" in directive
+        assert "58" in directive
+        assert "+16.0%" in directive
+        assert "15%" in directive
+
+    def test_drift_directive_absent_when_no_prior_vintage(self):
+        """A prior decision without ``committed_close`` does not trip
+        the drift check — Slice 5 cannot regress legacy entries."""
+        from tradingagents.agents.utils.decision_contracts import (
+            validate_target_drift,
+        )
+        prior = PortfolioDecision(
+            rating=PortfolioRating.BUY,
+            executive_summary="prior",
+            investment_thesis="prior",
+            price_target_horizon=60.0,
+            # committed_close, target_committed_at NOT set.
+        )
+        assert validate_target_drift(prior, current_close=58.0) is None

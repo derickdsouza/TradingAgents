@@ -16,6 +16,17 @@ class TradingMemoryLog:
     _DECISION_RE = re.compile(r"DECISION:\n(.*?)(?=\nREFLECTION:|\Z)", re.DOTALL)
     _REFLECTION_RE = re.compile(r"REFLECTION:\n(.*?)$", re.DOTALL)
 
+    # Slice 5: regexes that pull the horizon target (with optional `— _basis_`
+    # suffix) and the vintage line out of a stored decision-markdown block.
+    # Kept here as class attributes so they compile once.
+    _HORIZON_TARGET_RE = re.compile(
+        r"\*\*Horizon Target\*\*:\s*([0-9][0-9.,]*)"
+    )
+    _TARGET_VINTAGE_RE = re.compile(
+        r"\*\*Target Vintage\*\*:\s*committed\s+(\d{4}-\d{2}-\d{2})\s+at\s+"
+        r"([0-9][0-9.,]*)"
+    )
+
     def __init__(self, config: dict = None):
         cfg = config or {}
         self._log_path = None
@@ -67,6 +78,58 @@ class TradingMemoryLog:
     def get_pending_entries(self) -> List[dict]:
         """Return entries with outcome:pending (for Phase B)."""
         return [e for e in self.load_entries() if e.get("pending")]
+
+    def get_prior_pm_decision(self, ticker: str) -> Optional[dict]:
+        """Return the most recent PM decision for ``ticker`` with vintage info.
+
+        Used by Slice 5 of the PM decision contract to drive the cross-run
+        target-drift check. Parses ``**Horizon Target**: <value>`` and
+        ``**Target Vintage**: committed <date> at <close>`` out of the
+        stored decision-markdown block.
+
+        Returns a dict with keys ``price_target_horizon``,
+        ``target_committed_at``, ``committed_close``, ``trade_date`` for
+        the MOST RECENT entry whose decision text carries BOTH the horizon
+        target AND the target-vintage line.
+
+        Returns ``None`` when:
+
+        - No entry exists for ``ticker``.
+        - The most-recent entry for ``ticker`` lacks the target-vintage
+          line (e.g. shipped pre-Slice-5 or with the target dropped by
+          the hard validator). We deliberately do NOT walk further back —
+          if the most recent decision had no defensible target, the drift
+          check has nothing to anchor on and silently skips.
+        """
+        entries = self.load_entries()
+        if not entries:
+            return None
+        for entry in reversed(entries):
+            if entry["ticker"] != ticker:
+                continue
+            decision_text = entry.get("decision", "") or ""
+            horizon_match = self._HORIZON_TARGET_RE.search(decision_text)
+            vintage_match = self._TARGET_VINTAGE_RE.search(decision_text)
+            if not horizon_match or not vintage_match:
+                # Most-recent entry for this ticker lacks vintage info —
+                # nothing to drift-check against.
+                return None
+            try:
+                price_target = float(
+                    horizon_match.group(1).replace(",", "")
+                )
+                committed_close = float(
+                    vintage_match.group(2).replace(",", "")
+                )
+            except ValueError:
+                return None
+            return {
+                "price_target_horizon": price_target,
+                "target_committed_at": vintage_match.group(1),
+                "committed_close": committed_close,
+                "trade_date": entry["date"],
+            }
+        return None
 
     def get_past_context(self, ticker: str, n_same: int = 5, n_cross: int = 3) -> str:
         """Return formatted past context string for agent prompt injection."""

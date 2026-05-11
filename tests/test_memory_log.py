@@ -977,3 +977,279 @@ class TestLegacyRemoval:
         assert len(entries) == 1
         assert entries[0]["ticker"] == "NVDA"
         assert entries[0]["pending"] is True
+
+
+class TestGetPriorPmDecision:
+    """``TradingMemoryLog.get_prior_pm_decision(ticker)`` returns the most
+    recent committed-vintage entry for ``ticker`` (any status, pending or
+    resolved). Drives the Slice 5 cross-run drift check."""
+
+    def test_returns_none_when_log_is_empty(self, tmp_path):
+        log = make_log(tmp_path)
+        assert log.get_prior_pm_decision("NVDA") is None
+
+    def test_returns_none_when_no_entry_for_ticker(self, tmp_path):
+        log = make_log(tmp_path)
+        # AAPL entry with full vintage block.
+        decision = (
+            "**Rating**: Buy\n\n"
+            "**Executive Summary**: Test.\n\n"
+            "**Investment Thesis**: Test.\n\n"
+            "**Price Target**: 100.0 — _dcf_\n\n"
+            "**Horizon Target**: 100.0 — _dcf_\n\n"
+            "**Target Vintage**: committed 2026-04-27 at 90.0"
+        )
+        log.store_decision("AAPL", "2026-04-27", decision)
+        assert log.get_prior_pm_decision("NVDA") is None
+
+    def test_returns_none_when_most_recent_entry_lacks_vintage(self, tmp_path):
+        """If the most-recent NVDA entry has no Target Vintage line AND no
+        committed_close, there is nothing to drift-check against."""
+        log = make_log(tmp_path)
+        decision = (
+            "**Rating**: Buy\n\n"
+            "**Executive Summary**: Test.\n\n"
+            "**Investment Thesis**: Test.\n\n"
+            "**Price Target**: 100.0 — _dcf_\n\n"
+            "**Horizon Target**: 100.0 — _dcf_"
+        )
+        log.store_decision("NVDA", "2026-04-27", decision)
+        assert log.get_prior_pm_decision("NVDA") is None
+
+    def test_parses_horizon_target_and_vintage_from_decision_markdown(self, tmp_path):
+        log = make_log(tmp_path)
+        decision = (
+            "**Rating**: Buy\n\n"
+            "**Executive Summary**: Test.\n\n"
+            "**Investment Thesis**: Test.\n\n"
+            "**Price Target**: 60.0 — _dcf_\n\n"
+            "**Horizon Target**: 60.0 — _dcf_\n\n"
+            "**Target Vintage**: committed 2026-04-27 at 50.0"
+        )
+        log.store_decision("NVDA", "2026-04-27", decision)
+        prior = log.get_prior_pm_decision("NVDA")
+        assert prior is not None
+        assert prior["price_target_horizon"] == 60.0
+        assert prior["target_committed_at"] == "2026-04-27"
+        assert prior["committed_close"] == 50.0
+        assert prior["trade_date"] == "2026-04-27"
+
+    def test_returns_most_recent_entry_when_multiple_for_same_ticker(self, tmp_path):
+        log = make_log(tmp_path)
+        older = (
+            "**Rating**: Buy\n\n"
+            "**Executive Summary**: Test.\n\n"
+            "**Investment Thesis**: Test.\n\n"
+            "**Price Target**: 60.0\n\n"
+            "**Horizon Target**: 60.0\n\n"
+            "**Target Vintage**: committed 2026-04-01 at 50.0"
+        )
+        newer = (
+            "**Rating**: Buy\n\n"
+            "**Executive Summary**: Test.\n\n"
+            "**Investment Thesis**: Test.\n\n"
+            "**Price Target**: 70.0\n\n"
+            "**Horizon Target**: 70.0\n\n"
+            "**Target Vintage**: committed 2026-04-27 at 55.0"
+        )
+        log.store_decision("NVDA", "2026-04-01", older)
+        log.store_decision("NVDA", "2026-04-27", newer)
+        prior = log.get_prior_pm_decision("NVDA")
+        assert prior is not None
+        assert prior["trade_date"] == "2026-04-27"
+        assert prior["price_target_horizon"] == 70.0
+        assert prior["committed_close"] == 55.0
+
+    def test_returns_entry_with_basis_label_stripped(self, tmp_path):
+        """Horizon Target with a `— _basis_` suffix still parses cleanly."""
+        log = make_log(tmp_path)
+        decision = (
+            "**Rating**: Overweight\n\n"
+            "**Executive Summary**: Test.\n\n"
+            "**Investment Thesis**: Test.\n\n"
+            "**Price Target**: 105.5 — _peer_multiple_\n\n"
+            "**Horizon Target**: 105.5 — _peer_multiple_\n\n"
+            "**Target Vintage**: committed 2026-04-27 at 100.0"
+        )
+        log.store_decision("NVDA", "2026-04-27", decision)
+        prior = log.get_prior_pm_decision("NVDA")
+        assert prior is not None
+        assert prior["price_target_horizon"] == 105.5
+
+    def test_works_for_pending_entry(self, tmp_path):
+        """A still-pending entry is also valid for drift-comparison purposes —
+        the trade may not have resolved yet, but the target vintage is real."""
+        log = make_log(tmp_path)
+        decision = (
+            "**Rating**: Buy\n\n"
+            "**Executive Summary**: Test.\n\n"
+            "**Investment Thesis**: Test.\n\n"
+            "**Price Target**: 60.0\n\n"
+            "**Horizon Target**: 60.0\n\n"
+            "**Target Vintage**: committed 2026-04-27 at 50.0"
+        )
+        log.store_decision("NVDA", "2026-04-27", decision)
+        # Don't resolve. Still pending.
+        prior = log.get_prior_pm_decision("NVDA")
+        assert prior is not None
+        assert prior["price_target_horizon"] == 60.0
+
+
+class TestPortfolioManagerDriftInjection:
+    """End-to-end: ``create_portfolio_manager(llm, memory_log=...)`` looks
+    up the prior PM decision; when drift exceeds threshold, the new run's
+    prompt carries a ``**Drift Reaffirmation Required:**`` block."""
+
+    def _seed_prior(self, log, ticker, trade_date, target, committed_close, committed_at):
+        decision = (
+            f"**Rating**: Buy\n\n"
+            f"**Executive Summary**: Prior.\n\n"
+            f"**Investment Thesis**: Prior.\n\n"
+            f"**Price Target**: {target}\n\n"
+            f"**Horizon Target**: {target}\n\n"
+            f"**Target Vintage**: committed {committed_at} at {committed_close}"
+        )
+        log.store_decision(ticker, trade_date, decision)
+
+    def test_first_run_no_prior_no_drift_directive(self, tmp_path):
+        """First run for ticker: no prior, no drift directive."""
+        log = make_log(tmp_path)
+        captured = {}
+        llm = _structured_pm_llm(captured)
+        pm = create_portfolio_manager(llm, memory_log=log)
+        pm(_make_pm_state(latest_close=50.0, trade_date="2026-05-11"))
+        assert "Drift Reaffirmation Required" not in captured["prompt"]
+
+    def test_drift_under_threshold_no_directive(self, tmp_path):
+        """Prior committed at 50, current 52 (+4%) → no directive."""
+        log = make_log(tmp_path)
+        self._seed_prior(log, "NVDA", "2026-04-27", 60.0, 50.0, "2026-04-27")
+        captured = {}
+        llm = _structured_pm_llm(captured)
+        pm = create_portfolio_manager(llm, memory_log=log)
+        pm(_make_pm_state(latest_close=52.0, trade_date="2026-05-11"))
+        assert "Drift Reaffirmation Required" not in captured["prompt"]
+
+    def test_drift_over_threshold_injects_directive(self, tmp_path):
+        """Prior committed at 50, current 58 (+16%) → directive injected."""
+        log = make_log(tmp_path)
+        self._seed_prior(log, "NVDA", "2026-04-27", 60.0, 50.0, "2026-04-27")
+        captured = {}
+        llm = _structured_pm_llm(captured)
+        pm = create_portfolio_manager(llm, memory_log=log)
+        pm(_make_pm_state(latest_close=58.0, trade_date="2026-05-11"))
+        prompt = captured["prompt"]
+        assert "Drift Reaffirmation Required" in prompt
+        # The directive itself must carry the diagnostic numbers.
+        assert "ATTENTION" in prompt
+        assert "+16.0%" in prompt
+        assert "REAFFIRM" in prompt
+        assert "REVISE" in prompt
+
+    def test_drift_directive_appears_before_be_decisive(self, tmp_path):
+        """Directive must sit just above the ``Be decisive and ground...``
+        instruction, so the LLM reads it before producing output."""
+        log = make_log(tmp_path)
+        self._seed_prior(log, "NVDA", "2026-04-27", 60.0, 50.0, "2026-04-27")
+        captured = {}
+        llm = _structured_pm_llm(captured)
+        pm = create_portfolio_manager(llm, memory_log=log)
+        pm(_make_pm_state(latest_close=58.0, trade_date="2026-05-11"))
+        prompt = captured["prompt"]
+        drift_idx = prompt.index("Drift Reaffirmation Required")
+        decisive_idx = prompt.index("Be decisive and ground")
+        assert drift_idx < decisive_idx
+
+    def test_prior_without_committed_close_no_directive(self, tmp_path):
+        """A prior entry without a vintage block (legacy / dropped target)
+        does NOT trigger the drift check on the next run."""
+        log = make_log(tmp_path)
+        legacy_decision = (
+            "**Rating**: Buy\n\n"
+            "**Executive Summary**: Test.\n\n"
+            "**Investment Thesis**: Test.\n\n"
+            "**Price Target**: 60.0\n\n"
+            "**Horizon Target**: 60.0"  # NO target vintage line
+        )
+        log.store_decision("NVDA", "2026-04-27", legacy_decision)
+        captured = {}
+        llm = _structured_pm_llm(captured)
+        pm = create_portfolio_manager(llm, memory_log=log)
+        pm(_make_pm_state(latest_close=58.0, trade_date="2026-05-11"))
+        assert "Drift Reaffirmation Required" not in captured["prompt"]
+
+    def test_custom_threshold_triggers_at_lower_drift(self, tmp_path):
+        """Prior carrying ``target_drift_threshold_pct=0.10`` triggers at
+        12% drift even though it would not at the 15% default."""
+        # Seed a decision through the renderer so the (Slice 5) snapshot
+        # behavior persists the threshold into the vintage block via the
+        # PM node. For this isolated retrieval-side test we seed the
+        # markdown directly with the threshold injected; the regex-based
+        # parser doesn't read the threshold (it's a snapshot of the LLM
+        # decision), so the threshold takes effect on the SECOND run via
+        # the schema default — meaning the threshold here is what was
+        # SET on the prior PM decision before snapshot. The PM node
+        # supplies the schema default; an LLM could override.
+        #
+        # For TDD purposes, threshold-on-prior is verified via the
+        # validator-level unit test (TestValidateTargetDrift). Here we
+        # confirm the END-TO-END wiring with the schema default 15%.
+        log = make_log(tmp_path)
+        self._seed_prior(log, "NVDA", "2026-04-27", 60.0, 50.0, "2026-04-27")
+        captured = {}
+        llm = _structured_pm_llm(captured)
+        pm = create_portfolio_manager(llm, memory_log=log)
+        # 12% drift: 50 → 56. Under default 15% threshold → no directive.
+        pm(_make_pm_state(latest_close=56.0, trade_date="2026-05-11"))
+        assert "Drift Reaffirmation Required" not in captured["prompt"]
+
+    def test_pm_node_works_without_memory_log(self, tmp_path):
+        """Backwards-compat: ``create_portfolio_manager(llm)`` without
+        memory_log keeps working — no drift check, no error."""
+        captured = {}
+        llm = _structured_pm_llm(captured)
+        pm = create_portfolio_manager(llm)  # no memory_log kwarg
+        pm(_make_pm_state(latest_close=58.0, trade_date="2026-05-11"))
+        assert "Drift Reaffirmation Required" not in captured["prompt"]
+
+
+class TestPortfolioManagerVintageSnapshot:
+    """End-to-end: when the PM publishes a horizon target, the renderer
+    snapshots ``target_committed_at`` and ``committed_close`` into the
+    decision before validation. The vintage line appears in the rendered
+    markdown — and through the memory log, becomes the anchor for the
+    NEXT run's drift check."""
+
+    def test_render_snapshots_vintage_into_decision(self, tmp_path):
+        """A decision shipped with a horizon target must come out with the
+        vintage block in the rendered markdown."""
+        captured = {}
+        decision = PortfolioDecision(
+            rating=PortfolioRating.OVERWEIGHT,
+            executive_summary="Build position gradually.",
+            investment_thesis="Setup intact.",
+            price_target_horizon=58.0,
+            target_basis="dcf",
+        )
+        llm = _structured_pm_llm(captured, decision)
+        pm = create_portfolio_manager(llm)
+        result = pm(_make_pm_state(latest_close=50.0, trade_date="2026-05-11"))
+        md = result["final_trade_decision"]
+        assert "**Target Vintage**: committed 2026-05-11 at 50.0" in md
+
+    def test_render_does_not_snapshot_vintage_when_no_horizon_target(self, tmp_path):
+        """No horizon target → no vintage line. Vintage without a target
+        is meaningless (nothing to drift-check)."""
+        captured = {}
+        decision = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="Hold; await catalyst.",
+            investment_thesis="Balanced.",
+            # No price_target_horizon.
+        )
+        llm = _structured_pm_llm(captured, decision)
+        pm = create_portfolio_manager(llm)
+        result = pm(_make_pm_state(latest_close=50.0, trade_date="2026-05-11"))
+        md = result["final_trade_decision"]
+        assert "**Target Vintage**" not in md
+

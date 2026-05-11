@@ -20,7 +20,11 @@ import re
 from datetime import datetime
 from typing import Optional
 
-from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
+from tradingagents.agents.schemas import (
+    PortfolioDecision,
+    PortfolioRating,
+    render_pm_decision,
+)
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
     get_horizon_instruction,
@@ -34,8 +38,10 @@ from tradingagents.agents.utils.decision_contracts import (
     render_triangulation_notes,
     triangulate_portfolio_decision,
     validate_portfolio_decision,
+    validate_target_drift,
 )
 from tradingagents.agents.utils.evidence_ledger import render_evidence_ledger
+from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
@@ -70,7 +76,20 @@ def _parse_trade_date(value: str) -> Optional[datetime]:
         return None
 
 
-def create_portfolio_manager(llm):
+def create_portfolio_manager(
+    llm,
+    memory_log: Optional[TradingMemoryLog] = None,
+):
+    """Create the Portfolio Manager node.
+
+    ``memory_log`` is plumbed in so the node can pull the most recent
+    prior PM decision for the same ticker and inject a drift-reaffirmation
+    directive when the current close has moved past the threshold the
+    prior run committed to. Passing ``None`` (default) skips the drift
+    check entirely — useful in tests and for callers that don't operate
+    a memory log.
+    """
+
     structured_llm = bind_structured(llm, PortfolioDecision, "Portfolio Manager")
 
     def portfolio_manager_node(state) -> dict:
@@ -89,6 +108,46 @@ def create_portfolio_manager(llm):
         lessons_line = (
             f"- Lessons from prior decisions and outcomes:\n{past_context}\n"
             if past_context
+            else ""
+        )
+
+        # Resolve latest_close once — used by Slice 5's drift check
+        # (below) and by the validator context further down.
+        _resolved_close: Optional[float] = None
+        if (
+            ledger
+            and ledger.latest_close
+            and isinstance(ledger.latest_close.value, (int, float))
+        ):
+            _resolved_close = float(ledger.latest_close.value)
+        else:
+            _resolved_close = _parse_latest_close(key_levels)
+
+        # Slice 5: cross-run target drift. Look up the most recent prior
+        # PM decision for this ticker; if the current close has drifted
+        # past the threshold the prior run committed to, inject a
+        # directive forcing the LLM to explicitly REAFFIRM or REVISE the
+        # carried-forward target instead of silently shipping it again.
+        drift_directive: Optional[str] = None
+        if memory_log is not None:
+            prior = memory_log.get_prior_pm_decision(
+                state["company_of_interest"]
+            )
+            if prior is not None:
+                prior_decision = PortfolioDecision(
+                    rating=PortfolioRating.HOLD,  # placeholder — drift validator only reads target/vintage fields
+                    executive_summary="prior",
+                    investment_thesis="prior",
+                    price_target_horizon=prior["price_target_horizon"],
+                    target_committed_at=prior["target_committed_at"],
+                    committed_close=prior["committed_close"],
+                )
+                drift_directive = validate_target_drift(
+                    prior_decision, _resolved_close,
+                )
+        drift_block = (
+            f"\n\n**Drift Reaffirmation Required:**\n{drift_directive}\n"
+            if drift_directive
             else ""
         )
         if ledger_block_text:
@@ -134,8 +193,7 @@ Anti-patterns the validator will reject:
 **Risk Analysts Debate History:**
 {history}
 
----
-
+---{drift_block}
 Be decisive and ground every conclusion in specific evidence from the analysts.{get_horizon_instruction()}{get_language_instruction()}"""
 
         # Build the validator context from the evidence ledger (preferred)
@@ -143,7 +201,6 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
         # carries a usable close, the validator's loud-fail rule drops
         # any unverifiable target — better than publishing one anchored
         # to nothing.
-        ledger_close: Optional[float] = None
         ledger_close_as_of: Optional[datetime] = None
         ledger_vol: Optional[float] = None
         if (
@@ -151,7 +208,6 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
             and ledger.latest_close
             and isinstance(ledger.latest_close.value, (int, float))
         ):
-            ledger_close = float(ledger.latest_close.value)
             ledger_close_as_of = _parse_trade_date(
                 ledger.latest_close.as_of or ""
             )
@@ -165,11 +221,7 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
             if isinstance(fact.value, (int, float)):
                 ledger_vol = float(fact.value)
 
-        latest_close = (
-            ledger_close
-            if ledger_close is not None
-            else _parse_latest_close(key_levels)
-        )
+        latest_close = _resolved_close
         trade_date_dt = _parse_trade_date(state.get("trade_date", "")) or datetime.utcnow()
         close_as_of = ledger_close_as_of or trade_date_dt
 
@@ -205,6 +257,24 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
             ):
                 decision = decision.model_copy(
                     update={"target_currency": close_currency}
+                )
+            # Slice 5: snapshot the target vintage (committed_close +
+            # target_committed_at) BEFORE validation, so the rendered
+            # markdown carries the vintage line and the NEXT run's
+            # drift check has an anchor. Snapshot only when a horizon
+            # target is published — vintage without a target is
+            # meaningless. The fields are renderer-managed, never
+            # LLM-set (the schema descriptions enforce this).
+            if (
+                decision.price_target_horizon is not None
+                and latest_close is not None
+            ):
+                trade_date_str = state.get("trade_date") or trade_date_dt.strftime("%Y-%m-%d")
+                decision = decision.model_copy(
+                    update={
+                        "target_committed_at": trade_date_str,
+                        "committed_close": latest_close,
+                    }
                 )
             validated = validate_portfolio_decision(decision, validation_context)
             md = render_pm_decision(validated.decision, latest_close=latest_close)

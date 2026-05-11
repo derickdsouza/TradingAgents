@@ -2142,3 +2142,233 @@ class TestPortfolioManagerSlice4Wiring:
         md = result["final_trade_decision"]
         assert "**Triangulation Notes**" in md
         assert "SCORECARD_RATING_DIVERGENCE" in md
+
+
+# ---------------------------------------------------------------------------
+# Slice 5: Target-drift tracking across reports.
+#
+# A PM publishes a target at close 50, then re-runs two weeks later with
+# close 58 (+16% drift) and silently carries the same target forward. The
+# previous slices harden the contract WITHIN a single run; this slice
+# tracks the target's vintage so the next run sees the drift and the PM
+# is forced to either explicitly REAFFIRM or REVISE.
+# ---------------------------------------------------------------------------
+
+
+class TestSlice5SchemaFields:
+    """The three new fields exist on PortfolioDecision and accept values."""
+
+    def test_target_committed_at_field_present(self):
+        d = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="s",
+            investment_thesis="t",
+            target_committed_at="2026-05-11",
+        )
+        assert d.target_committed_at == "2026-05-11"
+
+    def test_committed_close_field_present(self):
+        d = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="s",
+            investment_thesis="t",
+            committed_close=59.77,
+        )
+        assert d.committed_close == 59.77
+
+    def test_target_drift_threshold_pct_default_is_15pct(self):
+        d = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="s",
+            investment_thesis="t",
+        )
+        assert d.target_drift_threshold_pct == 0.15
+
+
+class TestSlice5RenderTargetVintage:
+    """``render_pm_decision`` emits a Target Vintage line directly below the
+    horizon target line when both vintage fields are populated."""
+
+    def test_vintage_line_rendered_when_both_fields_present(self):
+        from tradingagents.agents.schemas import render_pm_decision
+        d = PortfolioDecision(
+            rating=PortfolioRating.BUY,
+            executive_summary="s",
+            investment_thesis="t",
+            price_target_horizon=60.0,
+            target_basis="dcf",
+            target_committed_at="2026-04-27",
+            committed_close=50.0,
+        )
+        md = render_pm_decision(d)
+        assert "**Target Vintage**: committed 2026-04-27 at 50.0" in md
+
+    def test_vintage_line_appears_below_horizon_target(self):
+        from tradingagents.agents.schemas import render_pm_decision
+        d = PortfolioDecision(
+            rating=PortfolioRating.BUY,
+            executive_summary="s",
+            investment_thesis="t",
+            price_target_horizon=60.0,
+            target_basis="dcf",
+            target_committed_at="2026-04-27",
+            committed_close=50.0,
+        )
+        md = render_pm_decision(d)
+        assert md.index("**Horizon Target**") < md.index("**Target Vintage**")
+
+    def test_vintage_line_absent_when_committed_close_missing(self):
+        from tradingagents.agents.schemas import render_pm_decision
+        d = PortfolioDecision(
+            rating=PortfolioRating.BUY,
+            executive_summary="s",
+            investment_thesis="t",
+            price_target_horizon=60.0,
+            target_basis="dcf",
+            target_committed_at="2026-04-27",
+        )
+        md = render_pm_decision(d)
+        assert "**Target Vintage**" not in md
+
+    def test_vintage_line_absent_when_target_committed_at_missing(self):
+        from tradingagents.agents.schemas import render_pm_decision
+        d = PortfolioDecision(
+            rating=PortfolioRating.BUY,
+            executive_summary="s",
+            investment_thesis="t",
+            price_target_horizon=60.0,
+            target_basis="dcf",
+            committed_close=50.0,
+        )
+        md = render_pm_decision(d)
+        assert "**Target Vintage**" not in md
+
+
+class TestValidateTargetDrift:
+    """``validate_target_drift`` compares the current close against the
+    prior decision's committed close and returns an LLM-facing directive
+    string when drift exceeds threshold; ``None`` otherwise.
+
+    Distinct from the existing hard validator: this returns a directive
+    that the PM node injects into the PROMPT (not a Validation Notes
+    footer), because the corrective action is the LLM's, not the
+    validator's. The validator cannot decide whether to reaffirm or revise.
+    """
+
+    def test_returns_none_when_committed_close_is_none(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            validate_target_drift,
+        )
+        prior = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="s",
+            investment_thesis="t",
+            price_target_horizon=50.0,
+        )
+        assert validate_target_drift(prior, current_close=58.0) is None
+
+    def test_returns_none_when_current_close_is_none(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            validate_target_drift,
+        )
+        prior = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="s",
+            investment_thesis="t",
+            price_target_horizon=50.0,
+            committed_close=50.0,
+            target_committed_at="2026-04-27",
+        )
+        assert validate_target_drift(prior, current_close=None) is None
+
+    def test_returns_none_when_threshold_is_none(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            validate_target_drift,
+        )
+        prior = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="s",
+            investment_thesis="t",
+            price_target_horizon=50.0,
+            committed_close=50.0,
+            target_committed_at="2026-04-27",
+            target_drift_threshold_pct=None,
+        )
+        assert validate_target_drift(prior, current_close=80.0) is None
+
+    def test_returns_none_when_drift_below_threshold(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            validate_target_drift,
+        )
+        prior = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="s",
+            investment_thesis="t",
+            price_target_horizon=50.0,
+            committed_close=50.0,
+            target_committed_at="2026-04-27",
+        )
+        # 4% drift, default threshold 15% → no directive.
+        assert validate_target_drift(prior, current_close=52.0) is None
+
+    def test_returns_directive_when_drift_exceeds_threshold(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            validate_target_drift,
+        )
+        prior = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="s",
+            investment_thesis="t",
+            price_target_horizon=50.0,
+            committed_close=50.0,
+            target_committed_at="2026-04-27",
+        )
+        # 16% drift, default 15% threshold → directive.
+        directive = validate_target_drift(prior, current_close=58.0)
+        assert directive is not None
+        assert isinstance(directive, str)
+        assert "ATTENTION" in directive
+        assert "50" in directive
+        assert "58" in directive
+        assert "2026-04-27" in directive
+        # Drift pct rendered as signed pct with one decimal.
+        assert "+16.0%" in directive
+        # Mentions threshold and reaffirm/revise.
+        assert "15%" in directive
+        assert "REAFFIRM" in directive
+        assert "REVISE" in directive
+
+    def test_custom_threshold_triggers_at_lower_drift(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            validate_target_drift,
+        )
+        prior = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="s",
+            investment_thesis="t",
+            price_target_horizon=50.0,
+            committed_close=50.0,
+            target_committed_at="2026-04-27",
+            target_drift_threshold_pct=0.10,
+        )
+        # 12% drift with 10% threshold → directive (would NOT fire at 15%).
+        directive = validate_target_drift(prior, current_close=56.0)
+        assert directive is not None
+        assert "10%" in directive
+
+    def test_directive_uses_absolute_drift_for_downward_move(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            validate_target_drift,
+        )
+        prior = PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="s",
+            investment_thesis="t",
+            price_target_horizon=50.0,
+            committed_close=50.0,
+            target_committed_at="2026-04-27",
+        )
+        # -20% drift, default 15% threshold → directive.
+        directive = validate_target_drift(prior, current_close=40.0)
+        assert directive is not None
+        assert "-20.0%" in directive
