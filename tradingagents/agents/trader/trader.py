@@ -135,6 +135,7 @@ def create_trader(llm):
             messages,
             _validated_render,
             "Trader",
+            schema=TraderProposal,
         )
 
         return {

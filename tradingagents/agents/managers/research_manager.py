@@ -71,6 +71,7 @@ Commit to a clear stance whenever the debate's strongest arguments warrant one; 
             prompt,
             render_research_plan,
             "Research Manager",
+            schema=ResearchPlan,
         )
 
         new_investment_debate_state = {
