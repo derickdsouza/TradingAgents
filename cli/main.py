@@ -1576,6 +1576,34 @@ def _build_trade_setup_block(
             "and may be incomplete.\n\n"
         )
 
+    # Slice 6: cross-agent coherence banner. The deterministic contract in
+    # ``validate_portfolio_decision`` drops the offending target so it
+    # never reaches this table — but a strict-polarity disagreement
+    # (Buy↔Sell across the Hold pivot) can still survive in the Action /
+    # Rating columns. Surface that as a visible banner so a reader does
+    # not have to cross-reference the Validation Notes footer to spot it.
+    # Hold on either side is treated as coherent (neutral pivot); the
+    # band gate inside the validator handles the +43.9% Run 1 case.
+    rating_value = _grab(pm_decision, "Rating")
+    rating_norm = (rating_value or "").strip().lower()
+    if action_norm and rating_norm and action_norm != "hold" and rating_norm != "hold":
+        bullish_actions = {"buy"}
+        bearish_actions = {"sell"}
+        bullish_ratings = {"buy", "overweight"}
+        bearish_ratings = {"underweight", "sell"}
+        incoherent = (
+            (action_norm in bullish_actions and rating_norm in bearish_ratings)
+            or (action_norm in bearish_actions and rating_norm in bullish_ratings)
+        )
+        if incoherent:
+            banner += (
+                f"> **⚠ Rating–action mismatch:** Trader action "
+                f"**{action_norm.capitalize()}** with PM rating "
+                f"**{rating_norm.capitalize()}** cannot be a single trade. "
+                "Review the Trader and Portfolio Manager sections before "
+                "acting on the table below.\n\n"
+            )
+
     return (
         f"{banner}"
         "## Trade Setup at a Glance\n\n"

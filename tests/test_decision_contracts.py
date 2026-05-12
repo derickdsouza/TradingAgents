@@ -2372,3 +2372,366 @@ class TestValidateTargetDrift:
         directive = validate_target_drift(prior, current_close=40.0)
         assert directive is not None
         assert "-20.0%" in directive
+
+
+# ---------------------------------------------------------------------------
+# Cross-agent coherence (Slice 6): Trader.action ↔ PortfolioDecision.rating.
+#
+# Regression source: SOUTHBANK.NS dual-run on 2026-05-12 — Run 1 published
+# Action=Hold + Rating=Overweight + Price Target +43.9% above close. Each
+# agent's structured output passed its own validator in isolation, but
+# nothing checked the pair. The new validator catches strict-polarity
+# incoherence (Buy/Sell across the Hold pivot) as a standalone note, and
+# the band check inside ``validate_portfolio_decision`` narrows to the
+# Hold band whenever the Trader said Hold — independent of PM rating.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestValidateActionRatingCoherence:
+    """``validate_action_rating_coherence`` flags strict-polarity disagreement
+    between Trader.action and PortfolioDecision.rating. Hold-action paired
+    with any rating is coherent (the Trader is waiting, the PM names the
+    long-run posture); a Buy paired with Sell/Underweight (or the inverse)
+    is not."""
+
+    def test_buy_action_with_underweight_rating_is_flagged(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            RATING_ACTION_INCOHERENT,
+            validate_action_rating_coherence,
+        )
+        notes = validate_action_rating_coherence(
+            TraderAction.BUY, PortfolioRating.UNDERWEIGHT,
+        )
+        assert any(RATING_ACTION_INCOHERENT in n for n in notes)
+
+    def test_buy_action_with_sell_rating_is_flagged(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            RATING_ACTION_INCOHERENT,
+            validate_action_rating_coherence,
+        )
+        notes = validate_action_rating_coherence(
+            TraderAction.BUY, PortfolioRating.SELL,
+        )
+        assert any(RATING_ACTION_INCOHERENT in n for n in notes)
+
+    def test_sell_action_with_overweight_rating_is_flagged(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            RATING_ACTION_INCOHERENT,
+            validate_action_rating_coherence,
+        )
+        notes = validate_action_rating_coherence(
+            TraderAction.SELL, PortfolioRating.OVERWEIGHT,
+        )
+        assert any(RATING_ACTION_INCOHERENT in n for n in notes)
+
+    def test_sell_action_with_buy_rating_is_flagged(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            RATING_ACTION_INCOHERENT,
+            validate_action_rating_coherence,
+        )
+        notes = validate_action_rating_coherence(
+            TraderAction.SELL, PortfolioRating.BUY,
+        )
+        assert any(RATING_ACTION_INCOHERENT in n for n in notes)
+
+    def test_buy_action_with_buy_rating_is_coherent(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            validate_action_rating_coherence,
+        )
+        assert validate_action_rating_coherence(
+            TraderAction.BUY, PortfolioRating.BUY,
+        ) == []
+
+    def test_buy_action_with_overweight_rating_is_coherent(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            validate_action_rating_coherence,
+        )
+        assert validate_action_rating_coherence(
+            TraderAction.BUY, PortfolioRating.OVERWEIGHT,
+        ) == []
+
+    def test_sell_action_with_underweight_rating_is_coherent(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            validate_action_rating_coherence,
+        )
+        assert validate_action_rating_coherence(
+            TraderAction.SELL, PortfolioRating.UNDERWEIGHT,
+        ) == []
+
+    def test_hold_action_pairs_with_any_rating(self):
+        """A Hold action means the Trader is waiting; the PM's wider rating
+        is allowed to encode the long-run posture without the pair tripping
+        the coherence rule. Strict-polarity violations come from Buy↔Sell-side
+        crossings, not from a Hold + Overweight pair."""
+        from tradingagents.agents.utils.decision_contracts import (
+            validate_action_rating_coherence,
+        )
+        for r in (
+            PortfolioRating.BUY, PortfolioRating.OVERWEIGHT,
+            PortfolioRating.HOLD, PortfolioRating.UNDERWEIGHT,
+            PortfolioRating.SELL,
+        ):
+            assert validate_action_rating_coherence(
+                TraderAction.HOLD, r,
+            ) == [], f"Hold + {r} should be coherent"
+
+    def test_hold_rating_pairs_with_any_action(self):
+        """Mirror of Hold-action — a Hold rating pairs with any trader action
+        (the PM is neutral over the long run, the Trader takes the tactical
+        position)."""
+        from tradingagents.agents.utils.decision_contracts import (
+            validate_action_rating_coherence,
+        )
+        for a in (TraderAction.BUY, TraderAction.HOLD, TraderAction.SELL):
+            assert validate_action_rating_coherence(
+                a, PortfolioRating.HOLD,
+            ) == [], f"{a} + Hold should be coherent"
+
+
+@pytest.mark.unit
+class TestPortfolioContractTraderActionGatesBand:
+    """``PortfolioValidationContext.trader_action``: when set, narrows the
+    band check to whichever side is tighter — so a PM Overweight + Trader
+    Hold + +30% target trips ``TARGET_DIRECTION_VIOLATION`` on the Hold
+    band rather than passing on the wider Overweight band. This is the
+    structural fix for the SOUTHBANK.NS Run 1 regression."""
+
+    def _ctx(self, *, trader_action=None) -> PortfolioValidationContext:
+        return PortfolioValidationContext(
+            trade_date=_TRADE_DATE, latest_close=100.0, close_as_of=_TRADE_DATE,
+            annualised_volatility=0.20,  # → 10% Hold band, same as Slice 1
+            trader_action=trader_action,
+        )
+
+    def test_overweight_pm_with_hold_trader_outside_hold_band_is_dropped(self):
+        """Run 1 regression: PM Overweight + Trader Hold + +30% target.
+        Without trader-action gating the Overweight branch accepts +30% as
+        bullish-coherent. With gating the Hold band applies and the target
+        is dropped with TARGET_DIRECTION_VIOLATION."""
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=130.0,
+            target_basis="DCF",
+        )
+        result = validate_portfolio_decision(
+            decision, self._ctx(trader_action=TraderAction.HOLD),
+        )
+        assert result.decision.price_target_horizon is None
+        assert any("TARGET_DIRECTION_VIOLATION" in n for n in result.notes)
+
+    def test_overweight_pm_with_hold_trader_within_hold_band_passes(self):
+        """The narrower band still admits targets within ±10%."""
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=105.0,
+            target_basis="range_bound",
+        )
+        result = validate_portfolio_decision(
+            decision, self._ctx(trader_action=TraderAction.HOLD),
+        )
+        assert result.decision.price_target_horizon == 105.0
+        assert not any("TARGET_DIRECTION_VIOLATION" in n for n in result.notes)
+
+    def test_overweight_pm_range_with_hold_trader_outside_hold_band_is_dropped(self):
+        """Run 1's at-a-glance also published Target Range 48–62 (a ~±15%
+        spread around close). With trader-action gating, the wide-range
+        bound trips TARGET_DIRECTION_VIOLATION on the Hold band."""
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            target_range_low=85.0,    # -15% (outside Hold band)
+            target_range_high=130.0,  # +30% (outside Hold band)
+            target_basis="range_bound",
+        )
+        result = validate_portfolio_decision(
+            decision, self._ctx(trader_action=TraderAction.HOLD),
+        )
+        assert result.decision.target_range_low is None
+        assert result.decision.target_range_high is None
+        assert any("TARGET_DIRECTION_VIOLATION" in n for n in result.notes)
+
+    def test_no_trader_action_falls_back_to_rating_band(self):
+        """Backward compat: when ``trader_action`` is unset, the validator
+        uses the PM rating's band exactly as before. Overweight + +5% passes,
+        Overweight + +30% would also pass on the bullish branch (the
+        directional epsilon is the only gate)."""
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=130.0,
+            target_basis="DCF",
+        )
+        result = validate_portfolio_decision(decision, self._ctx())
+        # No gating → Overweight + +30% above close is fine on its own.
+        assert result.decision.price_target_horizon == 130.0
+        assert not any("TARGET_DIRECTION_VIOLATION" in n for n in result.notes)
+
+    def test_hold_trader_with_hold_rating_unchanged(self):
+        """Trader Hold + PM Hold + +5% target: nothing changes — both the
+        rating-branch and the gated-Hold path agree on the Hold band."""
+        decision = _pm_decision(
+            rating=PortfolioRating.HOLD,
+            price_target_horizon=105.0,
+            target_basis="range_bound",
+        )
+        result = validate_portfolio_decision(
+            decision, self._ctx(trader_action=TraderAction.HOLD),
+        )
+        assert result.decision.price_target_horizon == 105.0
+        assert result.notes == []
+
+    def test_buy_trader_action_does_not_narrow_buy_band(self):
+        """Buy trader + Buy rating + +5% target: no spurious tightening —
+        the gating only kicks in when the Trader said Hold and the PM said
+        a non-Hold rating. Buy/Buy stays on the bullish branch."""
+        decision = _pm_decision(
+            rating=PortfolioRating.BUY,
+            price_target_horizon=130.0,
+            target_basis="DCF",
+        )
+        result = validate_portfolio_decision(
+            decision, self._ctx(trader_action=TraderAction.BUY),
+        )
+        assert result.decision.price_target_horizon == 130.0
+        assert result.notes == []
+
+    def test_disagreement_set_suspends_gated_band(self):
+        """The ``rating_target_disagreement`` escape hatch already suspends
+        the directional contract; trader-action gating must not bypass it.
+        A Hold-trader + Overweight-PM with +30% target AND a non-NONE
+        disagreement value passes (informational note only)."""
+        from tradingagents.agents.schemas import RatingTargetDisagreement
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=130.0,
+            target_basis="DCF",
+            rating_target_disagreement=RatingTargetDisagreement.MOMENTUM_OVERRIDE,
+        )
+        result = validate_portfolio_decision(
+            decision, self._ctx(trader_action=TraderAction.HOLD),
+        )
+        assert result.decision.price_target_horizon == 130.0
+        assert not any("TARGET_DIRECTION_VIOLATION" in n for n in result.notes)
+
+
+@pytest.mark.unit
+class TestPortfolioValidationContextTraderActionField:
+    """Slice 6 extends the context with an optional Trader action handle."""
+
+    def test_trader_action_defaults_to_none(self):
+        ctx = PortfolioValidationContext(trade_date=_TRADE_DATE)
+        assert ctx.trader_action is None
+
+    def test_trader_action_accepts_explicit_value(self):
+        ctx = PortfolioValidationContext(
+            trade_date=_TRADE_DATE, trader_action=TraderAction.HOLD,
+        )
+        assert ctx.trader_action == TraderAction.HOLD
+
+
+@pytest.mark.unit
+class TestParseTraderAction:
+    """``_parse_trader_action`` is the bridge between Trader output and the
+    PM validator context. A silently-broken parser means the trader-action
+    gate never kicks in — pin the contract."""
+
+    def test_extracts_buy_from_final_transaction_proposal_line(self):
+        from tradingagents.agents.managers.portfolio_manager import _parse_trader_action
+        text = "**Action**: Buy\n\nFINAL TRANSACTION PROPOSAL: **BUY**\n"
+        assert _parse_trader_action(text) == TraderAction.BUY
+
+    def test_extracts_hold(self):
+        from tradingagents.agents.managers.portfolio_manager import _parse_trader_action
+        text = "FINAL TRANSACTION PROPOSAL: **HOLD**"
+        assert _parse_trader_action(text) == TraderAction.HOLD
+
+    def test_extracts_sell(self):
+        from tradingagents.agents.managers.portfolio_manager import _parse_trader_action
+        text = "FINAL TRANSACTION PROPOSAL: **SELL**"
+        assert _parse_trader_action(text) == TraderAction.SELL
+
+    def test_case_insensitive(self):
+        from tradingagents.agents.managers.portfolio_manager import _parse_trader_action
+        text = "final transaction proposal: **hold**"
+        assert _parse_trader_action(text) == TraderAction.HOLD
+
+    def test_no_match_returns_none(self):
+        from tradingagents.agents.managers.portfolio_manager import _parse_trader_action
+        assert _parse_trader_action("I'd like to wait.") is None
+
+    def test_empty_string_returns_none(self):
+        from tradingagents.agents.managers.portfolio_manager import _parse_trader_action
+        assert _parse_trader_action("") is None
+        assert _parse_trader_action(None) is None  # type: ignore[arg-type]
+
+
+@pytest.mark.unit
+class TestPortfolioManagerSlice6Wiring(TestPortfolioManagerSlice2Wiring):
+    """End-to-end wiring test: a Hold-trader-plan + Overweight-PM
+    decision must trip TARGET_DIRECTION_VIOLATION on the Hold band even
+    though the Overweight branch alone would accept the +30% target.
+    This is the SOUTHBANK.NS Run 1 regression in fixture form."""
+
+    def _state_with_trader_plan(
+        self, *, ticker: str, latest_close: float, trader_plan: str,
+        vol: Optional[float] = None,
+    ):
+        state = self._state(ticker=ticker, latest_close=latest_close, vol=vol)
+        state["trader_investment_plan"] = trader_plan
+        return state
+
+    def test_hold_trader_plus_overweight_pm_drops_far_target(self):
+        from tradingagents.agents.managers.portfolio_manager import create_portfolio_manager
+        decision = PortfolioDecision(
+            rating=PortfolioRating.OVERWEIGHT,
+            executive_summary="Bullish over the year, awaiting tactical entry.",
+            investment_thesis="Setup constructive; near-term consolidation expected.",
+            price_target_horizon=130.0,  # +30% — outside the Hold band
+            target_basis="DCF",
+        )
+        pm = create_portfolio_manager(self._llm(decision))
+        trader_plan = (
+            "## Trader Proposal\n"
+            "**Action**: Hold\n\n"
+            "FINAL TRANSACTION PROPOSAL: **HOLD**\n"
+        )
+        result = pm(self._state_with_trader_plan(
+            ticker="SOUTHBANK.NS",
+            latest_close=100.0,
+            vol=0.20,
+            trader_plan=trader_plan,
+        ))
+        md = result["final_trade_decision"]
+        assert "TARGET_DIRECTION_VIOLATION" in md, (
+            "Hold-trader gate did not narrow the Overweight band — the "
+            "+30% target slipped through (SOUTHBANK Run 1 regression)."
+        )
+        assert "**Horizon Target**: 130.0" not in md
+
+    def test_buy_trader_plus_overweight_pm_preserves_far_target(self):
+        """Mirror case: Buy-trader + Overweight-PM + +30% target → the
+        Overweight band applies (bullish; any target above close + ε is
+        coherent) and the target is preserved. Confirms the gate is
+        Hold-specific and does NOT spuriously tighten Buy/Buy paths."""
+        from tradingagents.agents.managers.portfolio_manager import create_portfolio_manager
+        decision = PortfolioDecision(
+            rating=PortfolioRating.OVERWEIGHT,
+            executive_summary="Accumulate now.",
+            investment_thesis="Setup confirmed.",
+            price_target_horizon=130.0,
+            target_basis="DCF",
+        )
+        pm = create_portfolio_manager(self._llm(decision))
+        trader_plan = (
+            "## Trader Proposal\n"
+            "**Action**: Buy\n\n"
+            "FINAL TRANSACTION PROPOSAL: **BUY**\n"
+        )
+        result = pm(self._state_with_trader_plan(
+            ticker="SOUTHBANK.NS",
+            latest_close=100.0,
+            vol=0.20,
+            trader_plan=trader_plan,
+        ))
+        md = result["final_trade_decision"]
+        assert "**Horizon Target**: 130.0" in md
+        assert "TARGET_DIRECTION_VIOLATION" not in md

@@ -213,3 +213,100 @@ class TestSchemaBindFailureBanner:
         )
         # And we still didn't reintroduce the 50-DMA fallback.
         assert "50-DMA fallback" not in out
+
+
+# Reusable PM-side fixtures using canonical 5-tier ratings (Strong Buy is
+# not in the schema). Kept distinct from GOOD_PM_DECISION so the older
+# schema-bind tests above stay untouched.
+PM_OVERWEIGHT = (
+    "## Portfolio Decision\n"
+    "**Rating**: Overweight\n"
+    "**Price Target**: 41.00\n"
+    "**Time Horizon**: 6 months\n"
+)
+
+PM_UNDERWEIGHT = (
+    "## Portfolio Decision\n"
+    "**Rating**: Underweight\n"
+    "**Price Target**: 35.00\n"
+    "**Time Horizon**: 6 months\n"
+)
+
+PM_HOLD = (
+    "## Portfolio Decision\n"
+    "**Rating**: Hold\n"
+    "**Price Target**: 38.50\n"
+    "**Time Horizon**: 6 months\n"
+)
+
+TRADER_BUY = (
+    "## Trader Proposal\n"
+    "**Action**: Buy\n"
+    "**Entry Price**: 38.72\n"
+    "**Initial Stop**: 35.00\n"
+)
+
+TRADER_SELL = (
+    "## Trader Proposal\n"
+    "**Action**: Sell\n"
+    "**Initial Stop**: 40.00\n"
+)
+
+TRADER_HOLD = (
+    "## Trader Proposal\n"
+    "**Action**: Hold\n"
+    "**Initial Stop**: 35.00\n"
+)
+
+
+@pytest.mark.unit
+class TestRatingActionMismatchBanner:
+    """Slice 6 banner: Buy↔Sell-side strict-polarity disagreement between
+    Trader.action and PM.rating surfaces as a visible banner above the
+    Trade Setup table. Hold on either side is treated as coherent (the
+    neutral pivot)."""
+
+    def test_buy_action_with_underweight_rating_emits_banner(self):
+        out = _build_trade_setup_block(
+            TRADER_BUY, PM_UNDERWEIGHT, KEY_LEVELS_WITH_CLOSE,
+        )
+        assert out is not None
+        assert "Rating–action mismatch" in out, (
+            "missing strict-polarity banner for Buy + Underweight"
+        )
+        # Banner must sit ABOVE the table so the warning is visible first.
+        banner_idx = out.index("Rating–action mismatch")
+        table_idx = out.index("Trade Setup at a Glance")
+        assert banner_idx < table_idx
+
+    def test_sell_action_with_overweight_rating_emits_banner(self):
+        out = _build_trade_setup_block(
+            TRADER_SELL, PM_OVERWEIGHT, KEY_LEVELS_WITH_CLOSE,
+        )
+        assert out is not None
+        assert "Rating–action mismatch" in out
+
+    def test_hold_action_with_overweight_rating_emits_no_banner(self):
+        """SOUTHBANK Run 1 baseline: the at-pair level Hold + Overweight is
+        coherent (Trader waiting + PM long-run bullish). The +43.9% target
+        is dropped by ``validate_portfolio_decision`` upstream, so this
+        banner is reserved for the strict-polarity case."""
+        out = _build_trade_setup_block(
+            TRADER_HOLD, PM_OVERWEIGHT, KEY_LEVELS_WITH_CLOSE,
+        )
+        assert out is not None
+        assert "Rating–action mismatch" not in out
+
+    def test_buy_action_with_overweight_rating_emits_no_banner(self):
+        out = _build_trade_setup_block(
+            TRADER_BUY, PM_OVERWEIGHT, KEY_LEVELS_WITH_CLOSE,
+        )
+        assert out is not None
+        assert "Rating–action mismatch" not in out
+
+    def test_hold_action_with_hold_rating_emits_no_banner(self):
+        out = _build_trade_setup_block(
+            TRADER_HOLD, PM_HOLD, KEY_LEVELS_WITH_CLOSE,
+        )
+        assert out is not None
+        assert "Rating–action mismatch" not in out

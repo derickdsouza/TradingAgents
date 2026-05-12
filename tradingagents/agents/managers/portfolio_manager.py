@@ -23,6 +23,7 @@ from typing import Optional
 from tradingagents.agents.schemas import (
     PortfolioDecision,
     PortfolioRating,
+    TraderAction,
     render_pm_decision,
 )
 from tradingagents.agents.utils.agent_utils import (
@@ -46,6 +47,33 @@ from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
+
+
+def _parse_trader_action(trader_plan: str) -> Optional[TraderAction]:
+    """Extract the Trader's action from the rendered ``trader_investment_plan``.
+
+    Looks at the ``FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL**`` line
+    rather than the ``**Action**: ...`` row so the parser is anchored to
+    the schema's most-canonical trailing line — the one that's been
+    preserved across renderer revisions for analyst-pipeline back-compat.
+    Returns ``None`` when no line matches (free-text fallback, missing
+    Trader, schema bind failure).
+    """
+    if not trader_plan:
+        return None
+    match = re.search(
+        r"FINAL TRANSACTION PROPOSAL:\s*\*\*(BUY|HOLD|SELL)\*\*",
+        trader_plan,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    token = match.group(1).upper()
+    return {
+        "BUY": TraderAction.BUY,
+        "HOLD": TraderAction.HOLD,
+        "SELL": TraderAction.SELL,
+    }.get(token)
 
 
 def _parse_latest_close(key_levels: str) -> Optional[float]:
@@ -235,6 +263,13 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
         # rates / commodity futures (POINT_TARGET_INAPPROPRIATE).
         ticker_class = _ticker_class(state["company_of_interest"])
 
+        # Slice 6: parse the Trader's action out of the rendered plan and
+        # thread it through the validator so a Hold-action narrows the
+        # band check (Run 1 SOUTHBANK regression). When the action can't
+        # be recovered (free-text fallback, schema-bind failure), the
+        # context falls back to None and the validator behaves as before.
+        trader_action = _parse_trader_action(trader_plan)
+
         validation_context = PortfolioValidationContext(
             trade_date=trade_date_dt,
             latest_close=latest_close,
@@ -242,6 +277,7 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
             annualised_volatility=ledger_vol,
             close_currency=close_currency,
             ticker_class=ticker_class,
+            trader_action=trader_action,
         )
 
         def _validated_render(decision: PortfolioDecision) -> str:

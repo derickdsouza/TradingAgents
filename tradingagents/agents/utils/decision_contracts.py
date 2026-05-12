@@ -75,6 +75,12 @@ SCORECARD_TARGET_DIVERGENCE = "SCORECARD_TARGET_DIVERGENCE"
 # Slice 5 additions (target-drift tracking across reports).
 TARGET_DRIFT_THRESHOLD_EXCEEDED = "TARGET_DRIFT_THRESHOLD_EXCEEDED"
 
+# Slice 6: cross-agent coherence between Trader.action and PM.rating.
+# Strict-polarity disagreement (Buy↔Sell across the Hold pivot) raises this
+# note from ``validate_action_rating_coherence``; the at-a-glance banner
+# machinery (cli/main.py) surfaces it above the Trade Setup table.
+RATING_ACTION_INCOHERENT = "RATING_ACTION_INCOHERENT"
+
 # Slice 3 controlled vocabularies. Enforced post-parse so the schema stays
 # simple (free-text fields) and vocabulary failures surface as named notes
 # alongside the rest of the structural checks.
@@ -424,6 +430,14 @@ class PortfolioValidationContext:
     # a 12-month horizon (indexes, FX, macro rates, commodity futures).
     # Callers populate from ``_ticker_class(ticker)``.
     ticker_class: Optional[str] = None
+    # Slice 6: Trader's final action. When set and equal to Hold, the
+    # directional / range band check uses the Hold band regardless of the
+    # PM rating — the load-bearing field for tactical posture is the
+    # Trader's action, so a Hold-action + Overweight-PM + +30% target is a
+    # Hold-band violation even though the Overweight branch alone would
+    # accept it. Left ``None`` for backward compat; callers thread the
+    # parsed Trader action through ``portfolio_manager.py``.
+    trader_action: Optional[TraderAction] = None
 
 
 @dataclass
@@ -585,7 +599,12 @@ def validate_portfolio_decision(
     # Rule 4: directional contract against latest_close. Slice 3:
     # SUSPENDED when ``rating_target_disagreement`` is set to a non-none
     # value — the PM has explicitly named a reason the target may
-    # contradict the rating direction.
+    # contradict the rating direction. Slice 6: when the Trader's action
+    # is supplied and equals Hold, the effective polarity is Hold
+    # regardless of the PM rating (a Hold-action overrides an Overweight
+    # rating for band-width purposes — see the SOUTHBANK.NS Run 1
+    # regression where +43.9% upside slipped through on the Overweight
+    # branch despite the Trader saying Hold).
     if (
         cleaned.price_target_horizon is not None
         and context.latest_close is not None
@@ -593,7 +612,11 @@ def validate_portfolio_decision(
     ):
         close = context.latest_close
         target = cleaned.price_target_horizon
-        rating = cleaned.rating
+        rating = (
+            PortfolioRating.HOLD
+            if context.trader_action == TraderAction.HOLD
+            else cleaned.rating
+        )
         violation: Optional[str] = None
 
         if rating in _BULLISH_RATINGS:
@@ -664,7 +687,14 @@ def validate_portfolio_decision(
         close = context.latest_close
         low = cleaned.target_range_low
         high = cleaned.target_range_high
-        rating = cleaned.rating
+        # Slice 6: mirror Rule 4's Trader-action gating onto the range
+        # check so a Hold-action + Overweight-PM + 85–130 range trips
+        # TARGET_DIRECTION_VIOLATION on the Hold band.
+        rating = (
+            PortfolioRating.HOLD
+            if context.trader_action == TraderAction.HOLD
+            else cleaned.rating
+        )
         range_violation: Optional[str] = None
 
         if rating in _BULLISH_RATINGS:
@@ -905,6 +935,64 @@ def render_pm_validation_notes(notes: list[str]) -> str:
     headers) without churn at the call sites.
     """
     return render_validation_notes(notes)
+
+
+# ---------------------------------------------------------------------------
+# Cross-agent coherence (Slice 6).
+#
+# The hard validators above check each agent's structured output in
+# isolation. SOUTHBANK.NS Run 1 published Action=Hold + Rating=Overweight
+# + Target +43.9% — every per-agent contract passed. The Hold-action ↔
+# Overweight-rating pair, on its own, is allowed (PM names long-run
+# posture, Trader is tactically waiting); strict-polarity disagreement
+# (Buy + Underweight, Sell + Overweight, Buy + Sell) is not.
+# ---------------------------------------------------------------------------
+
+# Action polarity, mirroring _BULLISH_RATINGS / _BEARISH_RATINGS for the
+# 3-tier Trader scale. Hold is the neutral pivot.
+_BULLISH_ACTIONS: tuple[TraderAction, ...] = (TraderAction.BUY,)
+_BEARISH_ACTIONS: tuple[TraderAction, ...] = (TraderAction.SELL,)
+
+
+def validate_action_rating_coherence(
+    action: TraderAction,
+    rating: PortfolioRating,
+) -> list[str]:
+    """Return notes naming strict-polarity disagreement between sides.
+
+    Coherent pairs (returns ``[]``):
+
+    - Either side is Hold (the neutral pivot): the wider scale may still
+      encode a long-run posture different from the tactical action.
+    - Both sides bullish (Buy/Buy, Buy/Overweight).
+    - Both sides bearish (Sell/Sell, Sell/Underweight).
+
+    Incoherent pairs (returns a list with one ``RATING_ACTION_INCOHERENT``
+    note):
+
+    - Buy action with Underweight or Sell rating.
+    - Sell action with Buy or Overweight rating.
+
+    The directional band gate in :func:`validate_portfolio_decision`
+    handles the related "Hold action + Overweight rating + +30% target"
+    case by tightening the band; this function flags only the
+    standalone-pair violations.
+    """
+    if action == TraderAction.HOLD or rating == PortfolioRating.HOLD:
+        return []
+    if action in _BULLISH_ACTIONS and rating in _BEARISH_RATINGS:
+        return [
+            f"{RATING_ACTION_INCOHERENT}: Trader action {action.value} "
+            f"with PM rating {rating.value} — bullish action paired with a "
+            f"bearish rating cannot be a single trade."
+        ]
+    if action in _BEARISH_ACTIONS and rating in _BULLISH_RATINGS:
+        return [
+            f"{RATING_ACTION_INCOHERENT}: Trader action {action.value} "
+            f"with PM rating {rating.value} — bearish action paired with a "
+            f"bullish rating cannot be a single trade."
+        ]
+    return []
 
 
 # ---------------------------------------------------------------------------
