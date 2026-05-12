@@ -270,6 +270,14 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
         # context falls back to None and the validator behaves as before.
         trader_action = _parse_trader_action(trader_plan)
 
+        # Slice 7 (7ez): thread the configured trading horizon into the
+        # validator so swing+ horizons hard-require a target range. The
+        # config key is the source of truth; we pass the raw string so the
+        # validator's HORIZONS_REQUIRING_RANGE check stays a simple
+        # set-membership lookup with no enum coupling.
+        from tradingagents.dataflows.config import get_config as _get_cfg
+        horizon_key = (_get_cfg().get("trading_horizon") or "").lower() or None
+
         validation_context = PortfolioValidationContext(
             trade_date=trade_date_dt,
             latest_close=latest_close,
@@ -278,6 +286,7 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
             close_currency=close_currency,
             ticker_class=ticker_class,
             trader_action=trader_action,
+            horizon=horizon_key,
         )
 
         def _validated_render(decision: PortfolioDecision) -> str:

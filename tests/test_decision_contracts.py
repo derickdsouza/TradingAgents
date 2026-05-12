@@ -1787,6 +1787,164 @@ class TestRangeValidator:
 
 
 @pytest.mark.unit
+class TestHorizonConditionalRangeRequired:
+    """7ez — at swing+ horizons (swing / position / long-term) the PM must
+    publish a target range; a bare point target hides path uncertainty over
+    multi-week / multi-month windows. The validator emits
+    TARGET_RANGE_REQUIRED and synthesizes a ±5% range around the point as a
+    best-effort fallback so the renderer still produces a range row.
+    """
+
+    def _ctx_with_horizon(self, horizon: str) -> PortfolioValidationContext:
+        return PortfolioValidationContext(
+            trade_date=_TRADE_DATE, latest_close=100.0, close_as_of=_TRADE_DATE,
+            annualised_volatility=0.20,
+            horizon=horizon,
+        )
+
+    def test_swing_horizon_point_only_emits_required_note(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            TARGET_RANGE_REQUIRED,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=110.0,
+            target_basis="dcf",
+        )
+        result = validate_portfolio_decision(
+            decision, self._ctx_with_horizon("swing"),
+        )
+        assert any(TARGET_RANGE_REQUIRED in n for n in result.notes)
+
+    def test_swing_horizon_point_only_synthesizes_plus_minus_5pct_range(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            TARGET_RANGE_SYNTHESIZED,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=110.0,
+            target_basis="dcf",
+        )
+        result = validate_portfolio_decision(
+            decision, self._ctx_with_horizon("swing"),
+        )
+        assert result.decision.target_range_low == pytest.approx(104.5)
+        assert result.decision.target_range_high == pytest.approx(115.5)
+        assert any(TARGET_RANGE_SYNTHESIZED in n for n in result.notes)
+
+    def test_position_horizon_point_only_emits_required_note(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            TARGET_RANGE_REQUIRED,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=110.0,
+            target_basis="dcf",
+        )
+        result = validate_portfolio_decision(
+            decision, self._ctx_with_horizon("position"),
+        )
+        assert any(TARGET_RANGE_REQUIRED in n for n in result.notes)
+
+    def test_long_term_horizon_point_only_emits_required_note(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            TARGET_RANGE_REQUIRED,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=110.0,
+            target_basis="dcf",
+        )
+        result = validate_portfolio_decision(
+            decision, self._ctx_with_horizon("long-term"),
+        )
+        assert any(TARGET_RANGE_REQUIRED in n for n in result.notes)
+
+    def test_swing_horizon_with_explicit_range_emits_no_note(self):
+        from tradingagents.agents.utils.decision_contracts import (
+            TARGET_RANGE_REQUIRED,
+            TARGET_RANGE_SYNTHESIZED,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=110.0,
+            target_basis="dcf",
+            target_range_low=105.0,
+            target_range_high=118.0,
+        )
+        result = validate_portfolio_decision(
+            decision, self._ctx_with_horizon("swing"),
+        )
+        # Author-supplied range preserved verbatim; no synthesis note.
+        assert result.decision.target_range_low == 105.0
+        assert result.decision.target_range_high == 118.0
+        assert not any(TARGET_RANGE_REQUIRED in n for n in result.notes)
+        assert not any(TARGET_RANGE_SYNTHESIZED in n for n in result.notes)
+
+    def test_no_horizon_set_is_silent_backward_compat(self):
+        """Existing callers that don't thread horizon must keep working —
+        the new rule activates only when horizon is one of the swing+
+        labels."""
+        from tradingagents.agents.utils.decision_contracts import (
+            TARGET_RANGE_REQUIRED,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=110.0,
+            target_basis="dcf",
+        )
+        ctx = PortfolioValidationContext(
+            trade_date=_TRADE_DATE, latest_close=100.0, close_as_of=_TRADE_DATE,
+            annualised_volatility=0.20,
+        )
+        result = validate_portfolio_decision(decision, ctx)
+        assert not any(TARGET_RANGE_REQUIRED in n for n in result.notes)
+
+    def test_hold_rating_point_only_no_synthesis_at_swing(self):
+        """A Hold-rated point target shouldn't trigger directional drops;
+        the range is still synthesized because uncertainty applies to Holds
+        too at swing+ horizons, but no TARGET_DIRECTION_VIOLATION should
+        appear."""
+        from tradingagents.agents.utils.decision_contracts import (
+            TARGET_DIRECTION_VIOLATION,
+            TARGET_RANGE_SYNTHESIZED,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.HOLD,
+            price_target_horizon=100.0,  # at-close, well inside Hold band
+            target_basis="catalyst_neutral",
+        )
+        result = validate_portfolio_decision(
+            decision, self._ctx_with_horizon("swing"),
+        )
+        assert any(TARGET_RANGE_SYNTHESIZED in n for n in result.notes)
+        assert not any(TARGET_DIRECTION_VIOLATION in n for n in result.notes)
+
+    def test_disagreement_suspends_horizon_range_rule(self):
+        """When ``rating_target_disagreement`` is set the PM has explicitly
+        signalled an unusual posture — don't force a synthetic range that
+        contradicts the rationale."""
+        from tradingagents.agents.schemas import RatingTargetDisagreement
+        from tradingagents.agents.utils.decision_contracts import (
+            TARGET_RANGE_REQUIRED,
+            TARGET_RANGE_SYNTHESIZED,
+        )
+        decision = _pm_decision(
+            rating=PortfolioRating.OVERWEIGHT,
+            price_target_horizon=110.0,
+            target_basis="dcf",
+            rating_target_disagreement=RatingTargetDisagreement.DIVIDEND_FLOOR,
+        )
+        result = validate_portfolio_decision(
+            decision, self._ctx_with_horizon("swing"),
+        )
+        # When the directional contract is suspended, the horizon-range
+        # rule is too — the PM owns the trade-off explicitly.
+        assert not any(TARGET_RANGE_REQUIRED in n for n in result.notes)
+        assert not any(TARGET_RANGE_SYNTHESIZED in n for n in result.notes)
+
+
+@pytest.mark.unit
 class TestTickerClassPointReject:
     """Slice 4: index, FX, macro-rate, and commodity-future tickers cannot
     carry a point target — the false-precision penalty is too large. The

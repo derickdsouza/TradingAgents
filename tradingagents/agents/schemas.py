@@ -559,7 +559,10 @@ class PortfolioDecision(BaseModel):
             "are false precision; prefer ranges unless you have a specific basis "
             "(DCF base case, peer multiple) anchored to a single number. Index, FX, "
             "and macro tickers REQUIRE range form — point targets on those classes "
-            "are rejected by the validator."
+            "are rejected by the validator. At swing / position / long-term horizons "
+            "the validator HARD-REQUIRES both range bounds; if you supply only a "
+            "point target a synthetic ±5% range is filled in with a warning note. "
+            "Always publish your own range so the bounds reflect actual reasoning."
         ),
     )
     target_range_high: Optional[float] = Field(
@@ -567,7 +570,8 @@ class PortfolioDecision(BaseModel):
         description=(
             "Upper bound of the horizon target range. Pair with `target_range_low` "
             "and `price_target_horizon` (median). Required when `target_range_low` "
-            "is set."
+            "is set. At swing / position / long-term horizons this field is also "
+            "required even when `target_range_low` is None."
         ),
     )
     target_currency: Optional[str] = Field(

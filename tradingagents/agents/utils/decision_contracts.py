@@ -81,6 +81,16 @@ TARGET_DRIFT_THRESHOLD_EXCEEDED = "TARGET_DRIFT_THRESHOLD_EXCEEDED"
 # machinery (cli/main.py) surfaces it above the Trade Setup table.
 RATING_ACTION_INCOHERENT = "RATING_ACTION_INCOHERENT"
 
+# Slice 7 (7ez): horizon-conditional range requirement. At swing+ horizons
+# (swing / position / long-term) a bare point target hides multi-week to
+# multi-month path uncertainty. The validator raises TARGET_RANGE_REQUIRED
+# and synthesizes a ±5% range around the point so the renderer still
+# produces a range row — TARGET_RANGE_SYNTHESIZED marks the row as fallback
+# rather than author-supplied.
+TARGET_RANGE_REQUIRED = "TARGET_RANGE_REQUIRED"
+TARGET_RANGE_SYNTHESIZED = "TARGET_RANGE_SYNTHESIZED"
+HORIZONS_REQUIRING_RANGE = frozenset({"swing", "position", "long-term"})
+
 # Slice 3 controlled vocabularies. Enforced post-parse so the schema stays
 # simple (free-text fields) and vocabulary failures surface as named notes
 # alongside the rest of the structural checks.
@@ -438,6 +448,13 @@ class PortfolioValidationContext:
     # accept it. Left ``None`` for backward compat; callers thread the
     # parsed Trader action through ``portfolio_manager.py``.
     trader_action: Optional[TraderAction] = None
+    # Slice 7 (7ez): trading horizon key — one of HORIZONS_REQUIRING_RANGE
+    # ("swing" / "position" / "long-term") or any other label / None. When
+    # set to a swing+ label the validator hard-requires a target range; a
+    # bare point target triggers TARGET_RANGE_REQUIRED and a synthetic ±5%
+    # range is filled in. Left ``None`` for back-compat; the PM threads
+    # this from ``trading_horizon`` config.
+    horizon: Optional[str] = None
 
 
 @dataclass
@@ -800,6 +817,39 @@ def validate_portfolio_decision(
             f"the range form (target_range_low/target_range_high); point "
             f"targets at 12-month horizons are false precision on this "
             f"instrument class."
+        )
+
+    # Rule 4e (Slice 7 / 7ez): horizon-conditional range requirement.
+    # Path uncertainty over swing+ holding periods (weeks to months) is not
+    # captured by a single point target; the PM must publish a range. When
+    # the configured horizon is one of HORIZONS_REQUIRING_RANGE and only a
+    # point is present (no explicit range), raise TARGET_RANGE_REQUIRED and
+    # synthesize a ±5% range as a best-effort fallback so the renderer
+    # still produces a range row (marked TARGET_RANGE_SYNTHESIZED so a
+    # reviewer can tell the bounds are not author-supplied). Suspended
+    # under ``rating_target_disagreement`` so the named escape hatch
+    # continues to dominate.
+    if (
+        context.horizon in HORIZONS_REQUIRING_RANGE
+        and cleaned.price_target_horizon is not None
+        and cleaned.target_range_low is None
+        and cleaned.target_range_high is None
+        and not contract_suspended
+    ):
+        median = cleaned.price_target_horizon
+        cleaned.target_range_low = round(median * 0.95, 4)
+        cleaned.target_range_high = round(median * 1.05, 4)
+        notes.append(
+            f"{TARGET_RANGE_REQUIRED}: at horizon={context.horizon} both "
+            f"target_range_low and target_range_high are required — single-"
+            f"point targets do not capture path uncertainty over the "
+            f"holding period."
+        )
+        notes.append(
+            f"{TARGET_RANGE_SYNTHESIZED}: filled ±5% around median {median} "
+            f"as best-effort fallback (range: "
+            f"[{cleaned.target_range_low}, {cleaned.target_range_high}]); "
+            f"PM should publish an explicit range."
         )
 
     # Rule 5 (Slice 3): basis vocabulary validation. Coerce recognised
