@@ -90,11 +90,28 @@ class EvidenceScorecard(BaseModel):
             "Higher = stronger bull conviction surfaced by the evidence."
         ),
     )
+    bull_case_rationale: str = Field(
+        min_length=10, max_length=200,
+        description=(
+            "One sentence (≤30 words) citing the *specific fact* driving this "
+            "score. Quote a number, a level, a date, or an evidence-ledger "
+            "key. 'Strong fundamentals' is NOT acceptable; "
+            "'FY26 net income ₹14,556 Cr vs FY25 ₹11,302 Cr (+29%)' is."
+        ),
+    )
     bear_case: int = Field(
         ge=-2, le=2,
         description=(
             "Score for the bear side of the debate / argument. -2 to +2. "
             "More negative = stronger bear conviction surfaced by the evidence."
+        ),
+    )
+    bear_case_rationale: str = Field(
+        min_length=10, max_length=200,
+        description=(
+            "One sentence citing the *specific fact* driving this score (a "
+            "number, level, date, or evidence-ledger key). Generic phrases "
+            "like 'weak macro' are not acceptable."
         ),
     )
     trend_technical: int = Field(
@@ -104,11 +121,27 @@ class EvidenceScorecard(BaseModel):
             "breakout/breakdown signals, RS, and pattern integrity."
         ),
     )
+    trend_technical_rationale: str = Field(
+        min_length=10, max_length=200,
+        description=(
+            "One sentence citing the *specific setup* driving this score: "
+            "MA level, breakout/breakdown level, RS rank, or pattern. "
+            "Quote the actual number, not a label."
+        ),
+    )
     fundamental_quality: int = Field(
         ge=-2, le=2,
         description=(
             "Fundamental quality (margins, growth, returns on capital, "
             "balance-sheet strength). -2 to +2."
+        ),
+    )
+    fundamental_quality_rationale: str = Field(
+        min_length=10, max_length=200,
+        description=(
+            "One sentence citing the *specific metric* driving this score "
+            "(margin %, ROCE, growth rate, debt/EBITDA, etc.) with the "
+            "actual number."
         ),
     )
     liquidity_risk: int = Field(
@@ -118,11 +151,27 @@ class EvidenceScorecard(BaseModel):
             "(fortress balance sheet)."
         ),
     )
+    liquidity_risk_rationale: str = Field(
+        min_length=10, max_length=200,
+        description=(
+            "One sentence citing the *specific balance-sheet fact* driving "
+            "this score: net cash/debt, interest coverage, current ratio, "
+            "covenants. Quote the actual figure."
+        ),
+    )
     catalyst_clarity: int = Field(
         ge=-2, le=2,
         description=(
             "Clarity and proximity of catalysts. -2 to +2. Higher = clearer "
             "near-term drivers (earnings, product launches, macro events)."
+        ),
+    )
+    catalyst_clarity_rationale: str = Field(
+        min_length=10, max_length=200,
+        description=(
+            "One sentence citing the *specific catalyst* and its date "
+            "(earnings call, product launch, regulatory ruling). Quote the "
+            "actual date if known."
         ),
     )
     macro_regime: int = Field(
@@ -132,11 +181,27 @@ class EvidenceScorecard(BaseModel):
             "trend, sector regime, and FII/DII flow context."
         ),
     )
+    macro_regime_rationale: str = Field(
+        min_length=10, max_length=200,
+        description=(
+            "One sentence citing the *specific macro/regime fact* driving "
+            "this score: sector RS rank, FII/DII flow direction, index "
+            "trend, rate-cycle stance."
+        ),
+    )
     valuation: int = Field(
         ge=-2, le=2,
         description=(
             "Valuation tilt vs the thesis. -2 (stretched) to +2 (deeply "
             "supportive). Use 0 when valuation is fair or unclear."
+        ),
+    )
+    valuation_rationale: str = Field(
+        min_length=10, max_length=200,
+        description=(
+            "One sentence citing the *specific valuation metric* driving "
+            "this score: PE, PEG, EV/EBITDA, FCF yield. Compare to history "
+            "or peers with the actual numbers."
         ),
     )
     confidence: Confidence = Field(
@@ -177,14 +242,14 @@ def render_evidence_scorecard(sc: EvidenceScorecard) -> str:
 
     lines = [
         "**Scorecard**:",
-        f"- Bull Case: {_signed(sc.bull_case)}",
-        f"- Bear Case: {_signed(sc.bear_case)}",
-        f"- Trend / Technical: {_signed(sc.trend_technical)}",
-        f"- Fundamental Quality: {_signed(sc.fundamental_quality)}",
-        f"- Liquidity / Risk: {_signed(sc.liquidity_risk)}",
-        f"- Catalyst Clarity: {_signed(sc.catalyst_clarity)}",
-        f"- Macro / Regime: {_signed(sc.macro_regime)}",
-        f"- Valuation: {_signed(sc.valuation)}",
+        f"- Bull Case: {_signed(sc.bull_case)} — _{sc.bull_case_rationale}_",
+        f"- Bear Case: {_signed(sc.bear_case)} — _{sc.bear_case_rationale}_",
+        f"- Trend / Technical: {_signed(sc.trend_technical)} — _{sc.trend_technical_rationale}_",
+        f"- Fundamental Quality: {_signed(sc.fundamental_quality)} — _{sc.fundamental_quality_rationale}_",
+        f"- Liquidity / Risk: {_signed(sc.liquidity_risk)} — _{sc.liquidity_risk_rationale}_",
+        f"- Catalyst Clarity: {_signed(sc.catalyst_clarity)} — _{sc.catalyst_clarity_rationale}_",
+        f"- Macro / Regime: {_signed(sc.macro_regime)} — _{sc.macro_regime_rationale}_",
+        f"- Valuation: {_signed(sc.valuation)} — _{sc.valuation_rationale}_",
         f"- Confidence: {sc.confidence.value}",
         "",
         f"**Rating Rationale**: {sc.rating_rationale}",

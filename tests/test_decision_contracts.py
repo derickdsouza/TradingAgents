@@ -1936,6 +1936,14 @@ def _full_sc(**overrides):
         fundamental_quality=0, liquidity_risk=0, catalyst_clarity=0,
         macro_regime=0, valuation=0,
         confidence=Confidence.MEDIUM,
+        bull_case_rationale="bull rationale placeholder",
+        bear_case_rationale="bear rationale placeholder",
+        trend_technical_rationale="trend rationale placeholder",
+        fundamental_quality_rationale="fundamentals rationale placeholder",
+        liquidity_risk_rationale="liquidity rationale placeholder",
+        catalyst_clarity_rationale="catalyst rationale placeholder",
+        macro_regime_rationale="macro rationale placeholder",
+        valuation_rationale="valuation rationale placeholder",
         rating_rationale="r", invalidating_evidence="i",
     )
     base.update(overrides)

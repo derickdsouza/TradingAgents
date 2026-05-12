@@ -142,6 +142,30 @@ def _full_scorecard(**overrides) -> EvidenceScorecard:
         macro_regime=1,
         valuation=0,
         confidence=Confidence.HIGH,
+        bull_case_rationale=(
+            "AI capex orders +38% QoQ per the supplier guide on 2026-04-22."
+        ),
+        bear_case_rationale=(
+            "Channel-check shows hyperscaler order pause risk into Q3 2026."
+        ),
+        trend_technical_rationale=(
+            "Holds 50-DMA cluster at 178 with RVOL 1.6x on the May 1 breakout."
+        ),
+        fundamental_quality_rationale=(
+            "Gross margin 74.6% vs sector 52%; FCF conversion 92% in FY25."
+        ),
+        liquidity_risk_rationale=(
+            "Net cash $34B vs debt $11B; cash-pile fully covers two years of capex."
+        ),
+        catalyst_clarity_rationale=(
+            "Earnings 2026-05-28 and GTC keynote 2026-06-15 land within horizon."
+        ),
+        macro_regime_rationale=(
+            "Semis sector RS rank 92 against SPY; FII flows positive 6 weeks running."
+        ),
+        valuation_rationale=(
+            "FY27 PE 28x vs 5-yr median 32x; PEG 1.1 at consensus growth 26%."
+        ),
         rating_rationale=(
             "Bull case strongly outweighs bear; trend and catalysts align."
         ),
@@ -170,6 +194,66 @@ class TestEvidenceScorecard:
     def test_tie_breaker_optional_and_renders_when_present(self):
         sc = _full_scorecard(tie_breaker="Bull and bear cases offset; awaiting catalyst.")
         assert sc.tie_breaker is not None
+
+
+@pytest.mark.unit
+class TestEvidenceScorecardPerCategoryRationale:
+    """zlw — per-category rationale is required so divergence between runs is
+    auditable. A reviewer must be able to tell whether two models disagreed on
+    the *fact* driving a category score, not just on the score itself.
+    """
+
+    _CATEGORY_RATIONALE_FIELDS = (
+        "bull_case_rationale",
+        "bear_case_rationale",
+        "trend_technical_rationale",
+        "fundamental_quality_rationale",
+        "liquidity_risk_rationale",
+        "catalyst_clarity_rationale",
+        "macro_regime_rationale",
+        "valuation_rationale",
+    )
+
+    def test_all_eight_rationales_are_required_string_fields(self):
+        sc = _full_scorecard()
+        for field in self._CATEGORY_RATIONALE_FIELDS:
+            value = getattr(sc, field)
+            assert isinstance(value, str)
+            assert len(value) >= 10
+
+    def test_missing_any_rationale_fails_validation(self):
+        # Drop one rationale at a time; each omission must fail Pydantic.
+        for field in self._CATEGORY_RATIONALE_FIELDS:
+            with pytest.raises(Exception):
+                _full_scorecard(**{field: None})
+
+    def test_rationale_below_min_length_fails_validation(self):
+        with pytest.raises(Exception):
+            _full_scorecard(bull_case_rationale="too short")  # < 10 chars
+
+    def test_rationale_above_max_length_fails_validation(self):
+        with pytest.raises(Exception):
+            _full_scorecard(bull_case_rationale="x" * 201)  # > 200 chars
+
+    def test_renderer_inlines_each_category_rationale(self):
+        sc = _full_scorecard(
+            bull_case_rationale="AI capex orders +38% QoQ per supplier guide.",
+            liquidity_risk_rationale="Net cash $34B vs debt $11B (fortress).",
+        )
+        from tradingagents.agents.schemas import render_evidence_scorecard
+
+        md = render_evidence_scorecard(sc)
+        # Inline _rationale_ next to each category line.
+        assert "Bull Case: +2" in md and "AI capex orders +38% QoQ" in md
+        assert "Liquidity / Risk: 0" in md and "Net cash $34B vs debt $11B" in md
+        # The signed score and the rationale appear on the same line for each
+        # category, so cross-run scorecard diffs surface fact-level divergence
+        # rather than just numeric divergence.
+        for line in md.splitlines():
+            if line.startswith("- Bull Case:"):
+                assert "AI capex orders" in line
+            if line.startswith("- Liquidity / Risk:"):
+                assert "Net cash" in line
 
 
 @pytest.mark.unit
