@@ -78,6 +78,15 @@ PROFILES = {
         "research_only": True,
     },
 }
+# `full-qwen` extends `full` with local-Ollama provider + Qwen model
+# overrides. Built post-hoc so the "extends" relationship is literal in
+# code rather than duplicated across two dict literals.
+PROFILES["full-qwen"] = {
+    **PROFILES["full"],
+    "provider": "ollama",
+    "quick_model": "qwen3.6:35b",
+    "deep_model": "qwen3.6:35b",
+}
 
 
 # Create a deque to store recent messages with a maximum length
@@ -2567,6 +2576,12 @@ def analyze(
             horizon = bundle["horizon"]
         if depth == DEFAULTS["depth"] and "depth" in bundle:
             depth = bundle["depth"]
+        if provider == DEFAULTS["provider"] and "provider" in bundle:
+            provider = bundle["provider"]
+        if quick_model == DEFAULTS["quick_model"] and "quick_model" in bundle:
+            quick_model = bundle["quick_model"]
+        if deep_model == DEFAULTS["deep_model"] and "deep_model" in bundle:
+            deep_model = bundle["deep_model"]
         # research_only is a flag — profile turns it on unless the user
         # explicitly passed --research-only at the CLI (already True).
         if bundle.get("research_only") and not research_only:
