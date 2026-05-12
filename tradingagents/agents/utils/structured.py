@@ -28,7 +28,17 @@ from typing import Any, Callable, Optional, TypeVar
 
 from pydantic import BaseModel
 
+from tradingagents.agents.utils.freetext_salvage import salvage_into_schema
+
 logger = logging.getLogger(__name__)
+
+# Sentinel string returned when the structured retry loop has exhausted AND
+# the salvage parser could not recover a populated schema instance from the
+# free-text response. Begins with a fixed token so downstream renderers can
+# detect it and surface a loud banner instead of silently substituting
+# fallback values. Wiring of the banner is sibling bead fk5 — this module
+# only emits the sentinel; it does not detect or render it.
+SCHEMA_BIND_FAILED_SENTINEL = "[SCHEMA_BIND_FAILED]"
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -119,6 +129,7 @@ def invoke_structured_or_freetext(
     (so total attempts == ``max_retries + 1``). Defaults to the value of the
     ``TRADINGAGENTS_STRUCTURED_RETRIES`` env var, or 2.
     """
+    retry_exhausted = False
     if structured_llm is not None:
         retries = max_retries if max_retries is not None else _default_max_retries()
         total_attempts = retries + 1
@@ -138,6 +149,7 @@ def invoke_structured_or_freetext(
                     current_prompt = _prepend_reminder(
                         prompt, _schema_reminder(schema, exc)
                     )
+        retry_exhausted = True
         logger.warning(
             "%s: exhausted %d structured attempts (last error: %s); "
             "falling back to free text",
@@ -145,4 +157,26 @@ def invoke_structured_or_freetext(
         )
 
     response = plain_llm.invoke(prompt)
-    return response.content
+    response_text = response.content
+
+    # Salvage is only attempted when the structured retry loop ran AND
+    # exhausted — the ``structured_llm is None`` case (binding never
+    # succeeded at all) preserves the legacy raw-content return so
+    # provider-agnostic callers that never wanted structured output keep
+    # working unchanged.
+    if retry_exhausted and schema is not None:
+        salvaged = salvage_into_schema(response_text, schema)
+        if salvaged is not None:
+            logger.info(
+                "%s: salvaged free-text response into %s",
+                agent_name, schema.__name__,
+            )
+            return render(salvaged)
+        logger.warning(
+            "%s: salvage parser could not bind free text to %s; "
+            "emitting %s sentinel",
+            agent_name, schema.__name__, SCHEMA_BIND_FAILED_SENTINEL,
+        )
+        return f"{SCHEMA_BIND_FAILED_SENTINEL}\n{response_text}"
+
+    return response_text

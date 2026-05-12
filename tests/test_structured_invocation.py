@@ -99,7 +99,13 @@ class TestRetryWithSchemaReminder:
         assert "bad-json-attempt-2" in attempts[2]
 
     def test_falls_back_to_freetext_after_exhausting_retries(self):
-        """All 3 attempts (1 + 2 retries) fail → free-text path is used."""
+        """All 3 attempts (1 + 2 retries) fail → free-text path is used and
+        the salvage parser is run. With only two recognizable schema fields
+        (action + reasoning) the N>=3 guardrail in bead 9av fires and the
+        wrapper returns the ``[SCHEMA_BIND_FAILED]`` sentinel followed by
+        the original response text so a human reader still sees what the
+        model emitted.
+        """
         attempts: list = []
 
         def _invoke(prompt):
@@ -126,7 +132,8 @@ class TestRetryWithSchemaReminder:
             max_retries=2,
         )
 
-        assert result == plain_content
+        assert result.startswith("[SCHEMA_BIND_FAILED]\n")
+        assert plain_content in result
         assert len(attempts) == 3, "must try initial + 2 retries before falling back"
         # The free-text fallback must see the ORIGINAL prompt (unwrapped),
         # not one of the reminder-prepended retry prompts.
@@ -159,6 +166,11 @@ class TestRetryWithSchemaReminder:
             schema=_DummySchema,
         )
 
-        assert result == "fallback content"
+        # With env=0 there's one structured attempt; it fails, exhausting
+        # the retry loop. The salvage parser runs on ``"fallback content"``
+        # — pure prose with no schema-shaped key:value lines — and the
+        # ``[SCHEMA_BIND_FAILED]`` sentinel fires per bead 9av.
+        assert result.startswith("[SCHEMA_BIND_FAILED]\n")
+        assert "fallback content" in result
         assert len(attempts) == 1, "env=0 must disable all retries"
         plain.invoke.assert_called_once()
