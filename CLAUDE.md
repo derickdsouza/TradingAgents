@@ -313,3 +313,28 @@ When extending an indicator: register the description in `best_ind_params`,
 add the key to `_CUSTOM_INDICATORS` (if it's not native to stockstats), advertise
 it in `tradingagents/agents/analysts/market_analyst.py`'s system message, and
 mirror both files into the venv.
+
+---
+
+## Agent skills
+
+Per-repo setup for the engineering skills (`triage`, `to-issues`, `to-prd`, `qa`,
+`improve-codebase-architecture`, `diagnose`, `tdd`, `grill-with-docs`). This
+block overrides the global defaults in `~/.claude/CLAUDE.md`.
+
+### Issue tracker
+
+Beads (`bd`). Issues, tasks, and PRDs all live in the local Beads workspace.
+See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical role names used verbatim as native `bd` labels (`needs-triage`,
+`needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context. `CONTEXT.md` and `docs/adr/` will live at the repo root once
+materialized — neither exists yet. Skills should proceed silently when absent.
+See `docs/agents/domain.md`.
