@@ -19,7 +19,7 @@ so that:
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -805,3 +805,58 @@ def render_pm_decision(
     if decision.scorecard is not None:
         parts.extend(["", render_evidence_scorecard(decision.scorecard)])
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Sentiment Report (y8l)
+# ---------------------------------------------------------------------------
+
+
+class SentimentReport(BaseModel):
+    """Structured sentiment-analyst output with a sparse-data confidence floor.
+
+    The upstream sentiment analyst emits prose only — this schema is the
+    regression anchor for the *content* of that prose, used by tests and by
+    callers that want to validate a model's stated confidence against the
+    evidence it actually had. The model validator hard-rejects HIGH or
+    MEDIUM confidence claims on ``evidence_count <= 1``: the run-1/run-2
+    qwen vs glm divergence on a single Yahoo headline traced directly to
+    this — the qwen instance asserted HIGH confidence on one article. Code
+    catches the structurally indefensible case so downstream consumers can
+    treat ``confidence`` as a load-bearing field again.
+    """
+
+    final_recommendation: Literal["BUY", "HOLD", "SELL"] = Field(
+        description="The directional sentiment read. Exactly one of BUY / HOLD / SELL."
+    )
+    confidence: Literal["low", "medium", "high"] = Field(
+        description=(
+            "Confidence in the final_recommendation. MUST be 'low' when "
+            "evidence_count ≤ 1 — a single news bullet with no social "
+            "coverage is structurally too thin for higher confidence."
+        ),
+    )
+    evidence_count: int = Field(
+        ge=0,
+        description=(
+            "Number of distinct evidence items considered (news headlines + "
+            "StockTwits messages + Reddit posts). Counted deterministically "
+            "before the LLM runs so the validator anchor is independent of "
+            "the model's self-report."
+        ),
+    )
+    rationale: str = Field(
+        min_length=10,
+        description="One-to-two-sentence rationale citing the actual evidence.",
+    )
+
+    @model_validator(mode="after")
+    def _enforce_sparse_data_confidence_floor(self) -> "SentimentReport":
+        if self.evidence_count <= 1 and self.confidence != "low":
+            raise ValueError(
+                f"evidence_count={self.evidence_count} requires "
+                f"confidence='low'; got confidence='{self.confidence}'. "
+                f"One news bullet (or zero) with no social coverage is "
+                f"structurally too thin for medium / high confidence."
+            )
+        return self

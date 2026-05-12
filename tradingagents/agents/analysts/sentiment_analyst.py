@@ -19,6 +19,7 @@ turn 0. The LLM produces the sentiment report in a single invocation.
 See: https://github.com/TauricResearch/TradingAgents/issues/557
 """
 
+import re
 from datetime import datetime, timedelta
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -33,6 +34,75 @@ from tradingagents.dataflows.stocktwits import fetch_stocktwits_messages
 
 def _seven_days_back(trade_date: str) -> str:
     return (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+
+
+_NEWS_EMPTY_MARKERS = ("No news headlines available", "no news headlines available")
+_STOCKTWITS_EMPTY_PREFIXES = ("<no", "<stocktwits unavailable")
+_REDDIT_EMPTY_MARKER = "<no posts found"
+
+
+def count_sentiment_evidence(news_block: str, stocktwits_block: str, reddit_block: str) -> int:
+    """Count visible evidence items across the three pre-fetched blocks.
+
+    Deterministic — the LLM does not see this number. It is consumed by the
+    analyst to gate the sparse-data confidence banner. Failure mode this
+    counter is calibrated against: one news bullet + silent socials counts
+    as 1 (the qwen high-confidence-on-one-article failure), not 3.
+    """
+    return (
+        _count_news_items(news_block)
+        + _count_stocktwits_items(stocktwits_block)
+        + _count_reddit_items(reddit_block)
+    )
+
+
+def _count_news_items(block: str) -> int:
+    if not block:
+        return 0
+    if any(marker in block for marker in _NEWS_EMPTY_MARKERS):
+        return 0
+    return sum(1 for line in block.splitlines() if line.lstrip().startswith("- "))
+
+
+def _count_stocktwits_items(block: str) -> int:
+    if not block:
+        return 0
+    stripped = block.lstrip()
+    if any(stripped.startswith(prefix) for prefix in _STOCKTWITS_EMPTY_PREFIXES):
+        return 0
+    return sum(1 for line in block.splitlines() if line.lstrip().startswith("- @"))
+
+
+def _count_reddit_items(block: str) -> int:
+    if not block:
+        return 0
+    total = 0
+    for line in block.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("r/"):
+            continue
+        if _REDDIT_EMPTY_MARKER in stripped:
+            continue
+        match = re.search(r"(\d+)\s+post", stripped)
+        total += int(match.group(1)) if match else 1
+    return total
+
+
+def apply_sentiment_confidence_banner(prose: str, evidence_count: int) -> str:
+    """Prepend a deterministic sparse-data banner when evidence is thin.
+
+    Triggers at evidence_count ≤ 1 (the qwen failure floor: one news item
+    with both socials silent). Original prose is preserved verbatim below
+    the banner so the reader sees the caveat without the model needing to
+    self-flag.
+    """
+    if evidence_count > 1:
+        return prose
+    banner = (
+        f"**Sentiment Confidence**: LOW — sparse data "
+        f"(N={evidence_count} items considered)"
+    )
+    return f"{banner}\n\n{prose}"
 
 
 def create_sentiment_analyst(llm):
@@ -88,9 +158,17 @@ def create_sentiment_analyst(llm):
         chain = prompt | llm
         result = chain.invoke(state["messages"])
 
+        # Sparse-data confidence floor (y8l): when the three pre-fetched
+        # blocks surface ≤ 1 evidence item, prepend a deterministic banner
+        # so downstream readers (Research Manager, Portfolio Manager) see
+        # the caveat without parsing the prose body. The count is computed
+        # in code; the LLM never sees it.
+        evidence_count = count_sentiment_evidence(news_block, stocktwits_block, reddit_block)
+        annotated_report = apply_sentiment_confidence_banner(result.content, evidence_count)
+
         return {
             "messages": [result],
-            "sentiment_report": result.content,
+            "sentiment_report": annotated_report,
         }
 
     return sentiment_analyst_node
