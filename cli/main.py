@@ -1396,14 +1396,40 @@ def _build_trade_setup_block(
 
     Returns None if neither side yields any fields (e.g. a free-text fallback
     that didn't preserve the schema shape) — and also when *both* Trader and
-    PM outputs are absent entirely (research-only mode, where this block
-    would otherwise emit a misleading 50-DMA fallback as a fake "Entry Price"
-    and a footer pointing at trader/risk/PM sections that never ran).
+    PM outputs are absent entirely (research-only mode), where this block
+    would otherwise emit an empty header pointing at trader/risk/PM
+    sections that never ran. When the structured-output salvage parser
+    couldn't bind either side, the upstream helper emits a
+    ``[SCHEMA_BIND_FAILED]`` sentinel; this function detects it, strips
+    the marker, and prepends a visible warning banner above the table
+    instead of substituting silent fallback values.
     """
     import re
 
+    from tradingagents.agents.utils.structured import SCHEMA_BIND_FAILED_SENTINEL
+
     if not (trader_plan and trader_plan.strip()) and not (pm_decision and pm_decision.strip()):
         return None
+
+    def _strip_sentinel(text: str | None) -> tuple[str | None, bool]:
+        """Return (text-without-sentinel-line, sentinel_was_present).
+
+        The salvage parser emits ``[SCHEMA_BIND_FAILED]\\n<raw>`` when it
+        can't bind the response into the schema. We carry the raw text
+        forward (so the regex-based _grab logic can still scrape whatever
+        it can) but flag the failure so the caller can emit a banner.
+        """
+        if not text:
+            return text, False
+        if text.startswith(SCHEMA_BIND_FAILED_SENTINEL):
+            stripped = text[len(SCHEMA_BIND_FAILED_SENTINEL):]
+            if stripped.startswith("\n"):
+                stripped = stripped[1:]
+            return stripped, True
+        return text, False
+
+    trader_plan, trader_unbound = _strip_sentinel(trader_plan)
+    pm_decision, pm_unbound = _strip_sentinel(pm_decision)
 
     def _grab(text: str | None, label: str) -> str | None:
         if not text:
@@ -1454,15 +1480,6 @@ def _build_trade_setup_block(
         return n > current_close
 
     entry_price = _grab(trader_plan, "Entry Price")
-    if not entry_price and key_levels:
-        # Trader did not specify an anchor level. The latest close is the
-        # *current* price (where you'd buy at market), not an anchor for
-        # the recommendation — Hold/Sell anchors should be a prior level.
-        # Fall back to the 50-DMA from key_levels: it's the canonical
-        # "swing entry" anchor and almost always a meaningful prior level.
-        m = re.search(r"50-DMA:\s*([0-9][0-9.,]*)", key_levels)
-        if m:
-            entry_price = f"{m.group(1).strip()} — _50-DMA fallback (Trader did not specify an anchor level)_"
 
     initial_stop_raw = _grab(trader_plan, "Initial Stop")
     trailing_stop_raw = _grab(trader_plan, "Trailing Stop")
@@ -1491,18 +1508,39 @@ def _build_trade_setup_block(
         else None
     )
 
+    # Per-field provenance. When the sentinel fired for a given side, a
+    # field on that side which would otherwise be dropped becomes an
+    # explicit ``_(unbound)_`` marker — so the reader can see WHICH fields
+    # were lost to the schema-bind failure, not just that one occurred.
+    # ``None`` means the field is sourced from key_levels (no agent side).
+    TRADER = "trader"
+    PM = "pm"
     fields = [
-        ("Current Price", current_price_value),
-        ("Action", action),
-        ("Rating", _grab(pm_decision, "Rating")),
-        ("Entry Price", entry_price),
-        ("Initial Stop", initial_stop_clean),
-        ("Trailing Stop", trailing_stop_clean),
-        ("Position Sizing", _grab(trader_plan, "Position Sizing")),
-        ("Price Target", _grab(pm_decision, "Price Target")),
-        ("Time Horizon", _grab(pm_decision, "Time Horizon")),
+        ("Current Price", current_price_value, None),
+        ("Action", action, TRADER),
+        ("Rating", _grab(pm_decision, "Rating"), PM),
+        ("Entry Price", entry_price, TRADER),
+        ("Initial Stop", initial_stop_clean, TRADER),
+        ("Trailing Stop", trailing_stop_clean, TRADER),
+        ("Position Sizing", _grab(trader_plan, "Position Sizing"), TRADER),
+        ("Price Target", _grab(pm_decision, "Price Target"), PM),
+        ("Time Horizon", _grab(pm_decision, "Time Horizon"), PM),
     ]
-    rows = [(label, value) for label, value in fields if value]
+
+    def _row_value(value: str | None, side: str | None) -> str | None:
+        if value:
+            return value
+        if side == TRADER and trader_unbound:
+            return "_(unbound)_"
+        if side == PM and pm_unbound:
+            return "_(unbound)_"
+        return None
+
+    rows = [
+        (label, _row_value(value, side))
+        for label, value, side in fields
+    ]
+    rows = [(label, value) for label, value in rows if value]
     if not rows:
         return None
 
@@ -1520,7 +1558,26 @@ def _build_trade_setup_block(
             f"is preserved verbatim; this header drops the bad row(s) so the at-a-glance "
             f"summary doesn't mislead._\n\n"
         ) + footer
+
+    # Schema-bind-failure banner: visible warning ABOVE the table when the
+    # salvage parser couldn't bind either side. Replaces the previous silent
+    # inline 50-DMA italic fallback, which was easy to miss while scanning.
+    banner = ""
+    if trader_unbound or pm_unbound:
+        if trader_unbound and pm_unbound:
+            who = "Trader and Portfolio Manager"
+        elif trader_unbound:
+            who = "Trader"
+        else:
+            who = "Portfolio Manager"
+        banner = (
+            f"> **⚠ Schema-bind failure:** the {who} agent did not return "
+            "structured output. Values below are best-effort extractions "
+            "and may be incomplete.\n\n"
+        )
+
     return (
+        f"{banner}"
         "## Trade Setup at a Glance\n\n"
         f"{body}\n\n"
         f"{footer}"
