@@ -193,6 +193,184 @@ class TestValidateTraderProposal:
 
 
 @pytest.mark.unit
+class TestStopBufferRule:
+    """74l — a stop placed AT a cited structural support (200-DMA, 50-DMA,
+    52w-low, 20d-low) is triggered by routine retests of that level. The
+    validator flags any stop sitting within ``buffer_pct`` of a cited
+    support so the reader sees the wedge-stop risk explicitly. The flag is
+    advisory (no drop) — the trader's basis label may still be defensible.
+    Buffer thresholds scale with horizon: swing 3%, position 4%, long-term
+    5% (wider holds tolerate wider whipsaws).
+    """
+
+    def _ctx(self, **kw):
+        kw.setdefault("latest_close", 40.0)
+        return TraderValidationContext(**kw)
+
+    def test_stop_at_cited_support_emits_no_buffer_note(self):
+        from tradingagents.agents.utils.decision_contracts import STOP_NO_BUFFER
+
+        proposal = TraderProposal(
+            action=TraderAction.BUY,
+            reasoning="r",
+            entry_price=38.0,
+            stop_initial=36.47,  # exactly the 200-DMA
+            stop_initial_basis="200-DMA",
+        )
+        ctx = self._ctx(
+            support_levels=(("200-DMA", 36.47),),
+            horizon="swing",
+        )
+        result = validate_trader_proposal(proposal, ctx)
+        assert any(STOP_NO_BUFFER in n and "200-DMA" in n for n in result.notes)
+        # Advisory only — the stop itself is preserved.
+        assert result.proposal.stop_initial == 36.47
+
+    def test_stop_with_5pct_buffer_below_support_is_clean(self):
+        from tradingagents.agents.utils.decision_contracts import STOP_NO_BUFFER
+
+        proposal = TraderProposal(
+            action=TraderAction.BUY,
+            reasoning="r",
+            entry_price=38.0,
+            stop_initial=34.50,  # 200-DMA (36.47) minus ~5.4%
+            stop_initial_basis="200-DMA −5%",
+        )
+        ctx = self._ctx(
+            support_levels=(("200-DMA", 36.47),),
+            horizon="swing",
+        )
+        result = validate_trader_proposal(proposal, ctx)
+        assert not any(STOP_NO_BUFFER in n for n in result.notes)
+
+    def test_stop_just_above_support_also_fires(self):
+        """Stop above cited support means the level hasn't been tested yet
+        on the way down — a single retest takes the trade out before the
+        thesis is invalidated. Worse than a stop AT the level."""
+        from tradingagents.agents.utils.decision_contracts import STOP_NO_BUFFER
+
+        proposal = TraderProposal(
+            action=TraderAction.BUY,
+            reasoning="r",
+            entry_price=38.0,
+            stop_initial=37.10,  # just above the 200-DMA at 36.47 (≈1.7% above)
+            stop_initial_basis="thesis-break",
+        )
+        ctx = self._ctx(
+            support_levels=(("200-DMA", 36.47),),
+            horizon="swing",
+        )
+        result = validate_trader_proposal(proposal, ctx)
+        assert any(STOP_NO_BUFFER in n for n in result.notes)
+
+    def test_trailing_stop_at_support_also_flags(self):
+        from tradingagents.agents.utils.decision_contracts import STOP_NO_BUFFER
+
+        proposal = TraderProposal(
+            action=TraderAction.BUY,
+            reasoning="r",
+            stop_trailing=50.05,  # right at the 50-DMA
+            stop_trailing_basis="rising 50-DMA",
+        )
+        ctx = self._ctx(
+            latest_close=55.0,
+            support_levels=(("50-DMA", 50.0),),
+            horizon="swing",
+        )
+        result = validate_trader_proposal(proposal, ctx)
+        assert any(STOP_NO_BUFFER in n and "50-DMA" in n for n in result.notes)
+        # Trailing stop preserved (advisory only).
+        assert result.proposal.stop_trailing == 50.05
+
+    def test_position_horizon_uses_4pct_buffer(self):
+        """At position horizon, 3.5% buffer is still too tight (4% needed)."""
+        from tradingagents.agents.utils.decision_contracts import STOP_NO_BUFFER
+
+        proposal = TraderProposal(
+            action=TraderAction.BUY,
+            reasoning="r",
+            stop_initial=35.20,  # ~3.5% below 36.47
+            stop_initial_basis="thesis-break",
+        )
+        ctx = self._ctx(
+            support_levels=(("200-DMA", 36.47),),
+            horizon="position",
+        )
+        result = validate_trader_proposal(proposal, ctx)
+        assert any(STOP_NO_BUFFER in n for n in result.notes)
+
+    def test_long_term_horizon_uses_5pct_buffer(self):
+        """At long-term horizon, even 4.5% below is still too tight."""
+        from tradingagents.agents.utils.decision_contracts import STOP_NO_BUFFER
+
+        proposal = TraderProposal(
+            action=TraderAction.BUY,
+            reasoning="r",
+            stop_initial=34.83,  # ~4.5% below 36.47
+            stop_initial_basis="thesis-break",
+        )
+        ctx = self._ctx(
+            support_levels=(("200-DMA", 36.47),),
+            horizon="long-term",
+        )
+        result = validate_trader_proposal(proposal, ctx)
+        assert any(STOP_NO_BUFFER in n for n in result.notes)
+
+    def test_no_support_levels_no_check(self):
+        from tradingagents.agents.utils.decision_contracts import STOP_NO_BUFFER
+
+        proposal = TraderProposal(
+            action=TraderAction.BUY,
+            reasoning="r",
+            stop_initial=36.47,
+            stop_initial_basis="200-DMA",
+        )
+        # Backward compat: callers that don't supply support_levels skip
+        # the rule entirely.
+        ctx = TraderValidationContext(latest_close=40.0)
+        result = validate_trader_proposal(proposal, ctx)
+        assert not any(STOP_NO_BUFFER in n for n in result.notes)
+
+    def test_short_side_stop_at_resistance_also_flags(self):
+        """For Sell-side trades, the stop sits ABOVE close at a cited
+        *resistance*. Same buffer logic applies symmetrically."""
+        from tradingagents.agents.utils.decision_contracts import STOP_NO_BUFFER
+
+        proposal = TraderProposal(
+            action=TraderAction.SELL,
+            reasoning="r",
+            stop_initial=200.10,  # at 200.0 resistance
+            stop_initial_basis="prior swing high",
+        )
+        ctx = TraderValidationContext(
+            latest_close=180.0,
+            support_levels=(("prior swing high", 200.0),),
+            horizon="swing",
+        )
+        result = validate_trader_proposal(proposal, ctx)
+        assert any(STOP_NO_BUFFER in n for n in result.notes)
+
+    def test_multiple_supports_each_emits_distinct_note(self):
+        """If a stop is wedged near *two* cited supports the validator
+        flags both so the trader sees the full picture."""
+        from tradingagents.agents.utils.decision_contracts import STOP_NO_BUFFER
+
+        proposal = TraderProposal(
+            action=TraderAction.BUY,
+            reasoning="r",
+            stop_initial=36.45,
+            stop_initial_basis="200-DMA + 52w-low cluster",
+        )
+        ctx = self._ctx(
+            support_levels=(("200-DMA", 36.47), ("52w-low", 36.30)),
+            horizon="swing",
+        )
+        result = validate_trader_proposal(proposal, ctx)
+        no_buffer_notes = [n for n in result.notes if STOP_NO_BUFFER in n]
+        assert len(no_buffer_notes) == 2
+
+
+@pytest.mark.unit
 class TestRenderValidationNotes:
     def test_empty_notes_render_empty_string(self):
         assert render_validation_notes([]) == ""

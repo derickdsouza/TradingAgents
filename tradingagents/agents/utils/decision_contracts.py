@@ -91,6 +91,19 @@ TARGET_RANGE_REQUIRED = "TARGET_RANGE_REQUIRED"
 TARGET_RANGE_SYNTHESIZED = "TARGET_RANGE_SYNTHESIZED"
 HORIZONS_REQUIRING_RANGE = frozenset({"swing", "position", "long-term"})
 
+# Slice 7 (74l): stop-buffer note. A stop placed AT a cited structural
+# support is triggered by routine retests of that level; a stop placed
+# BELOW it with a buffer only fires on a genuine break. The note is
+# advisory (no drop) — the basis label may still be defensible — and
+# scales the threshold by horizon (longer holds tolerate wider whipsaws).
+STOP_NO_BUFFER = "STOP_NO_BUFFER"
+_STOP_BUFFER_PCT_BY_HORIZON = {
+    "swing": 0.03,
+    "position": 0.04,
+    "long-term": 0.05,
+}
+_STOP_BUFFER_PCT_DEFAULT = 0.04
+
 # Slice 3 controlled vocabularies. Enforced post-parse so the schema stays
 # simple (free-text fields) and vocabulary failures surface as named notes
 # alongside the rest of the structural checks.
@@ -260,9 +273,22 @@ class TraderValidationContext:
     from the Key Price Levels block fed to the agent). When ``None`` the
     directional checks are skipped — without a reference price we cannot
     disprove a stop's direction.
+
+    Slice 7 (74l) additions:
+
+    - ``support_levels``: cited structural levels (200-DMA, 50-DMA, 52w
+      low, 20d low, prior swing high/low) threaded from the Evidence
+      Ledger so the validator can flag stops that sit at-or-near a cited
+      level. Each entry is ``(label, value)``. Default empty for back-
+      compat; callers that don't thread the ledger skip the rule.
+    - ``horizon``: trading horizon key controlling the per-horizon buffer
+      threshold (swing 3% / position 4% / long-term 5%). Defaults to
+      ``None`` (uses ``_STOP_BUFFER_PCT_DEFAULT``).
     """
 
     latest_close: Optional[float] = None
+    support_levels: tuple[tuple[str, float], ...] = ()
+    horizon: Optional[str] = None
 
 
 @dataclass
@@ -365,6 +391,39 @@ def validate_trader_proposal(
         if getattr(cleaned, value_attr) is None and getattr(cleaned, basis_attr):
             setattr(cleaned, basis_attr, None)
             notes.append(f"{label} basis dropped: orphan basis without a paired price value.")
+
+    # Rule 4 (Slice 7 / 74l): stop-buffer advisory. For each cited
+    # structural level, flag any surviving stop sitting within the
+    # horizon-scaled buffer of that level. The note is advisory so the
+    # trade still ships — but the reader sees the wedge-stop risk
+    # explicitly. Symmetric on direction: for longs we expect the stop
+    # below support, for shorts above resistance, but the rule
+    # ``abs(stop - level) / level < buffer_pct`` covers both cases and
+    # the "just on the wrong side of the level" failure mode (long stop
+    # ABOVE support: untested level; short stop BELOW resistance: ditto).
+    if context.support_levels:
+        buffer_pct = _STOP_BUFFER_PCT_BY_HORIZON.get(
+            (context.horizon or "").lower(), _STOP_BUFFER_PCT_DEFAULT
+        )
+        for stop_attr, label in (
+            ("stop_initial", "Initial Stop"),
+            ("stop_trailing", "Trailing Stop"),
+        ):
+            stop_val = getattr(cleaned, stop_attr)
+            if stop_val is None:
+                continue
+            for level_name, level_value in context.support_levels:
+                if level_value <= 0:
+                    continue
+                if abs(stop_val - level_value) / level_value < buffer_pct:
+                    notes.append(
+                        f"{STOP_NO_BUFFER}: {label} {stop_val} sits within "
+                        f"{buffer_pct * 100:.0f}% of cited level "
+                        f"{level_name} ({level_value}); routine retests of "
+                        f"{level_name} would trigger this stop. Place the "
+                        f"stop ≥{buffer_pct * 100:.0f}% beyond the level so "
+                        f"it only fires on a genuine break."
+                    )
 
     return ValidatedTraderProposal(proposal=cleaned, notes=notes)
 

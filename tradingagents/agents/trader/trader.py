@@ -93,7 +93,11 @@ def create_trader(llm):
                     "thesis is invalidated. Either a technical stop (just below 20-day low / swing low "
                     "/ 200-DMA — name it in stop_initial_basis as e.g. 'just below 20-day low') OR a "
                     "thesis-break stop (round number representing fundamental deterioration — name it "
-                    "as e.g. 'thesis-break (fundamental, fixed)'). (b) `stop_trailing` + "
+                    "as e.g. 'thesis-break (fundamental, fixed)'). **Place the stop with a BUFFER below "
+                    "the structural level you anchor to — never AT the level itself. A stop at the "
+                    "200-DMA is triggered by routine retests; a stop ~3-5% below the 200-DMA only "
+                    "fires on a genuine break. Buffer rule of thumb: swing 3%, position 4%, long-term "
+                    "5%.** (b) `stop_trailing` + "
                     "`stop_trailing_basis` is the OPTIONAL DYNAMIC trailing stop that moves up as the "
                     "trade moves in favour, anchored to a trailing reference like 'Chandelier Exit "
                     "(ATR, dynamic)', 'AVWAP-52wL', or 'rising 50-DMA'. Many real swing setups carry "
@@ -119,8 +123,31 @@ def create_trader(llm):
         ledger_close: Optional[float] = None
         if ledger and ledger.latest_close and isinstance(ledger.latest_close.value, (int, float)):
             ledger_close = float(ledger.latest_close.value)
+        # Slice 7 (74l): thread cited structural levels into the validator
+        # so a stop placed AT a level (zero buffer) gets flagged. We only
+        # surface the levels typically used as STOP anchors — SMAs and
+        # recent lows for longs, recent highs for shorts. The validator
+        # treats the rule symmetrically so labelling each as "level" is
+        # enough; the basis label on the stop itself stays the reader's
+        # signal of intent.
+        support_levels: list[tuple[str, float]] = []
+        if ledger:
+            for label, fact in (
+                ("200-DMA", ledger.sma_200),
+                ("50-DMA", ledger.sma_50),
+                ("52w-low", ledger.low_52w),
+                ("20d-low", ledger.low_20d),
+                ("52w-high", ledger.high_52w),
+                ("20d-high", ledger.high_20d),
+            ):
+                if fact and isinstance(fact.value, (int, float)):
+                    support_levels.append((label, float(fact.value)))
+        from tradingagents.dataflows.config import get_config as _get_cfg
+        horizon_key = (_get_cfg().get("trading_horizon") or "").lower() or None
         validation_context = TraderValidationContext(
             latest_close=ledger_close if ledger_close is not None else _parse_latest_close(key_levels),
+            support_levels=tuple(support_levels),
+            horizon=horizon_key,
         )
 
         def _validated_render(proposal: TraderProposal) -> str:
