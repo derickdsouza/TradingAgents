@@ -33,20 +33,10 @@ def create_fundamentals_analyst(llm):
 
         lookback_phrase = get_horizon()["lookback_phrase"]
         system_message = (
-            f"You are a researcher tasked with analyzing fundamental information over {lookback_phrase} about a company. Please write a comprehensive report of the company's fundamental information such as financial documents, company profile, basic company financials, and company financial history to gain a full view of the company's fundamental information to inform traders. Make sure to include as much detail as possible. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
-            + " Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."
-            + " When you have all the data you need and are producing the final report, begin your response directly with the report content (e.g. a heading or the first analytical paragraph). Do NOT preface the report with sentences like 'Now I have all the data needed.' or 'Let me compile the analysis.' — those narrator-style intros are saved verbatim into the report file."
-            + " Use the available tools: `get_fundamentals` for comprehensive company analysis; `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements; and `get_insider_transactions` to surface insider buying/selling that often precedes material moves."
-            + (
-                " For this Indian ticker, also call `get_shareholding_pattern` —"
-                " quarterly promoter %, public %, and current pledge %."
-                " Promoter pledge above 10% is a meaningful risk signal and"
-                " a falling promoter % over multiple quarters often signals"
-                " institutional confidence concerns."
-                if is_indian_ticker(ticker) else ""
-            )
-            + get_analyst_horizon_instruction()
-            + get_language_instruction(),
+            build_fundamentals_system_message(
+                ticker=ticker,
+                lookback_phrase=lookback_phrase,
+            ),
         )
 
         prompt = ChatPromptTemplate.from_messages(
@@ -86,3 +76,46 @@ def create_fundamentals_analyst(llm):
         }
 
     return fundamentals_analyst_node
+
+
+def build_fundamentals_system_message(*, ticker: str, lookback_phrase: str) -> str:
+    """Assemble the fundamentals-analyst system message.
+
+    Extracted from the node body so the prompt contract can be tested
+    deterministically. The dual-rollup clause (qyn) is the load-bearing
+    addition: prior runs of the analyst were free to render only
+    quarterly *or* only annual tables, hiding either the recent inflection
+    or the multi-year trajectory.
+    """
+    indian_clause = (
+        " For this Indian ticker, also call `get_shareholding_pattern` —"
+        " quarterly promoter %, public %, and current pledge %."
+        " Promoter pledge above 10% is a meaningful risk signal and"
+        " a falling promoter % over multiple quarters often signals"
+        " institutional confidence concerns."
+        if is_indian_ticker(ticker) else ""
+    )
+    dual_rollup_clause = (
+        " RENDER BOTH a quarterly AND an annual rollup — neither alone is"
+        " sufficient. Annual tables hide recent inflections; quarterly tables"
+        " hide multi-year trajectory. (1) Quarterly table: trailing 4 quarters"
+        " with QoQ and YoY columns — call `get_income_statement`,"
+        " `get_balance_sheet`, and `get_cashflow` with `freq='quarterly'`."
+        " (2) Annual table: trailing 5 FYs — call the same three with"
+        " `freq='annual'`. For each rollup include revenue, NII (banks) /"
+        " gross margin (non-banks), net income, operating cash flow, OCF/NI"
+        " ratio, and the key segment metric. If the source returns only one"
+        " rollup for this ticker, state explicitly `Quarterly data not"
+        " available — only annual rollup shown` (or the mirror for"
+        " annual-missing) rather than silently picking one."
+    )
+    return (
+        f"You are a researcher tasked with analyzing fundamental information over {lookback_phrase} about a company. Please write a comprehensive report of the company's fundamental information such as financial documents, company profile, basic company financials, and company financial history to gain a full view of the company's fundamental information to inform traders. Make sure to include as much detail as possible. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
+        + " Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."
+        + " When you have all the data you need and are producing the final report, begin your response directly with the report content (e.g. a heading or the first analytical paragraph). Do NOT preface the report with sentences like 'Now I have all the data needed.' or 'Let me compile the analysis.' — those narrator-style intros are saved verbatim into the report file."
+        + " Use the available tools: `get_fundamentals` for comprehensive company analysis; `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements; and `get_insider_transactions` to surface insider buying/selling that often precedes material moves."
+        + dual_rollup_clause
+        + indian_clause
+        + get_analyst_horizon_instruction()
+        + get_language_instruction()
+    )
