@@ -78,14 +78,20 @@ PROFILES = {
         "research_only": True,
     },
 }
-# `full-qwen` extends `full` with local-Ollama provider + Qwen model
-# overrides. Built post-hoc so the "extends" relationship is literal in
-# code rather than duplicated across two dict literals.
+# `full-qwen` and `full-gemma` extend `full` with local-Ollama provider +
+# model overrides. Built post-hoc so the "extends" relationship is literal
+# in code rather than duplicated across multiple dict literals.
 PROFILES["full-qwen"] = {
     **PROFILES["full"],
     "provider": "ollama",
     "quick_model": "qwen3.6:35b",
     "deep_model": "qwen3.6:35b",
+}
+PROFILES["full-gemma"] = {
+    **PROFILES["full"],
+    "provider": "ollama",
+    "quick_model": "gemma4:31b",
+    "deep_model": "gemma4:31b",
 }
 
 
